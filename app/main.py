@@ -163,7 +163,7 @@ async def run_collection(x_admin_secret: str | None = Header(default=None)):
     except Exception as exc:
         runtime["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
         logger.exception("Falha na coleta manual do Mercado Livre")
-        raise HTTPException(502, "A coleta falhou; consulte os logs do Render.") from exc
+        raise HTTPException(502, f"Coleta bloqueada: {str(exc)[:450]}. Se o código for PA_UNAUTHORIZED_RESULT_FROM_POLICIES, habilite as permissões funcionais necessárias no DevCenter do Mercado Livre e confirme que o app está ativo.") from exc
 
 
 @app.get('/admin/collector', response_class=HTMLResponse)
