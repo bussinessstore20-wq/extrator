@@ -56,7 +56,21 @@ async def api_get(path: str, params: dict | None = None):
         response = await client.get(f"{API}{path}", params=params or {})
         if response.status_code == 429:
             raise RuntimeError("Mercado Livre limitou as requisições (HTTP 429); a coleta será retomada no próximo ciclo.")
-        response.raise_for_status()
+        if response.status_code >= 400:
+            # Preserve the provider's diagnostic message, but never log credentials.
+            body = response.text[:800]
+            import logging
+            logging.getLogger(__name__).error(
+                "Mercado Livre API rejeitou %s: HTTP %s; resposta=%s",
+                path, response.status_code, body
+            )
+            if response.status_code == 403:
+                raise RuntimeError(
+                    f"Mercado Livre negou acesso ao recurso {path} (HTTP 403). "
+                    f"Detalhe da API: {body[:400]}. Verifique a autorização OAuth, "
+                    "o status/permissões do aplicativo e possíveis restrições de acesso."
+                )
+            raise RuntimeError(f"Mercado Livre API HTTP {response.status_code} em {path}: {body[:400]}")
         return response.json()
 
 async def get_categories() -> list[dict]:
