@@ -1,3 +1,5 @@
+import asyncio
+from datetime import datetime, timezone, timedelta
 import httpx
 from app import config
 from app.db import get_db, log_event
@@ -17,10 +19,18 @@ async def access_token() -> str:
     saved = get_saved_tokens()
     token = saved.get("access_token") or config.ML_ACCESS_TOKEN
     refresh = saved.get("refresh_token") or config.ML_REFRESH_TOKEN
-    if token:
+    expires_at = saved.get("expires_at")
+    if token and expires_at:
+        try:
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if expiry > datetime.now(timezone.utc) + timedelta(seconds=60):
+                return token
+        except (TypeError, ValueError):
+            pass
+    elif token and not refresh:
         return token
     if not refresh or not config.ML_CLIENT_ID or not config.ML_CLIENT_SECRET:
-        return ""
+        return token or ""
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(f"{API}/oauth/token", data={
             "grant_type": "refresh_token",
@@ -30,13 +40,16 @@ async def access_token() -> str:
         })
         response.raise_for_status()
         data = response.json()
-    saved = {"access_token": data.get("access_token", ""), "refresh_token": data.get("refresh_token", refresh)}
-    get_db().table("extrator_settings").upsert({
-        "key": "ml_oauth", "value": saved
-    }).execute()
+    expires_in = int(data.get("expires_in") or 0)
+    saved = {
+        "access_token": data.get("access_token", ""),
+        "refresh_token": data.get("refresh_token", refresh),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=max(0, expires_in))).isoformat(),
+    }
+    get_db().table("extrator_settings").upsert({"key": "ml_oauth", "value": saved}).execute()
     return saved["access_token"]
 
-async def api_get(path: str, params: dict | None = None) -> dict:
+async def api_get(path: str, params: dict | None = None):
     token = await access_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     async with httpx.AsyncClient(timeout=25, headers=headers) as client:
@@ -79,7 +92,7 @@ def persist_product(item: dict, category_id: str) -> bool:
             "available_quantity": item.get("available_quantity"),
             "official_store_id": item.get("official_store_id"),
         },
-        "last_checked_at": "now()",
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
     }
     if existing:
         # Keep human decisions intact; refresh only product data.
@@ -96,12 +109,12 @@ def persist_product(item: dict, category_id: str) -> bool:
 
 async def collect_once() -> dict:
     categories = await get_categories()
-    if not isinstance(categories, list):
-        raise RuntimeError("A API não retornou a lista de categorias esperada.")
+    if not isinstance(categories, list) or not categories:
+        raise RuntimeError("A API não retornou categorias disponíveis para a coleta.")
     db = get_db()
     settings_rows = db.table("extrator_settings").select("value").eq("key", "collector").limit(1).execute().data
     settings = settings_rows[0].get("value", {}) if settings_rows else {}
-    cursor = int(settings.get("category_cursor", 0)) % max(1, len(categories))
+    cursor = int(settings.get("category_cursor", 0)) % len(categories)
     count = min(config.COLLECTOR_CATEGORIES_PER_CYCLE, len(categories))
     selected = [categories[(cursor + i) % len(categories)] for i in range(count)]
     run = db.table("extrator_collection_runs").insert({"status": "running"}).execute().data[0]
@@ -116,17 +129,18 @@ async def collect_once() -> dict:
             for item in items:
                 try:
                     new_items += int(persist_product(item, category_id))
-                except Exception:
+                except Exception as exc:
                     errors += 1
-            await __import__("asyncio").sleep(1.0)
+                    log_event("product_persist_error", details={"item_id": item.get("id"), "error": str(exc)[:300]})
+            await asyncio.sleep(1.0)
         except Exception as exc:
             errors += 1
             log_event("category_collection_error", details={"category_id": category_id, "error": str(exc)[:500]})
-    next_cursor = (cursor + count) % max(1, len(categories))
+    next_cursor = (cursor + count) % len(categories)
     settings.update({"enabled": config.COLLECTOR_ENABLED, "category_cursor": next_cursor})
     db.table("extrator_settings").upsert({"key": "collector", "value": settings}).execute()
     db.table("extrator_collection_runs").update({
-        "finished_at": "now()",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
         "status": "completed" if errors == 0 else "partial",
         "categories_seen": count,
         "items_seen": seen,
