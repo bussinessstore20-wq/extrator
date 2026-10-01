@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 from app import config
 from app.db import get_db, log_event
 
@@ -96,8 +96,34 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.answer("Falha ao publicar. O erro foi registrado.", show_alert=True)
         await query.message.reply_text("⚠️ A publicação falhou. Verifique os logs antes de tentar novamente.")
 
+async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "🤖 Extrator conectado.\n\n"
+            "Use /status para consultar o estado do serviço."
+        )
+
+
+async def on_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_message or not update.effective_user:
+        return
+    if not is_admin(update.effective_user.id):
+        await update.effective_message.reply_text("Acesso restrito ao administrador.")
+        return
+    collector = "ligada" if config.COLLECTOR_ENABLED else "desligada"
+    database = "conectado" if config.supabase_ready() else "não configurado"
+    await update.effective_message.reply_text(
+        "📊 Status do Extrator\n"
+        f"Banco de dados: {database}\n"
+        f"Coleta automática: {collector}\n"
+        "Aprovação de produtos: disponível quando houver itens pendentes."
+    )
+
+
 async def start_bot():
     application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", on_start))
+    application.add_handler(CommandHandler("status", on_status))
     application.add_handler(CallbackQueryHandler(on_decision, pattern=r"^(approve|reject):"))
     await application.initialize()
     await application.start()
