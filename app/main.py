@@ -9,6 +9,9 @@ from app.mercadolivre import collect_once
 from app.telegram_bot import start_bot, send_pending_products
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+# HTTP client URLs may contain Telegram bot tokens; never emit them in application logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("extrator")
 runtime = {"bot": None, "collector_task": None, "review_task": None, "last_collection": None, "last_error": None}
 
