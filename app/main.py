@@ -161,7 +161,8 @@ async def run_collection(x_admin_secret: str | None = Header(default=None)):
         runtime["last_error"] = None
         return {"status": "completed", **result}
     except Exception as exc:
-        runtime["last_error"] = str(exc)[:500]
+        runtime["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+        logger.exception("Falha na coleta manual do Mercado Livre")
         raise HTTPException(502, "A coleta falhou; consulte os logs do Render.") from exc
 
 
