@@ -2,6 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import RedirectResponse
 from app import config
 from app.db import get_db, log_event
 from app.mercadolivre import collect_once
@@ -97,7 +98,7 @@ async def oauth_start():
         "redirect_uri": config.ML_REDIRECT_URI,
         "state": config.ML_OAUTH_STATE,
     })
-    return {"authorize_url": f"https://auth.mercadolivre.com.br/authorization?{params}"}
+    return RedirectResponse(f"https://auth.mercadolivre.com.br/authorization?{params}", status_code=302)
 
 @app.get("/oauth/mercadolivre/callback")
 async def oauth_callback(code: str = "", state: str = "", error: str = ""):
@@ -108,6 +109,7 @@ async def oauth_callback(code: str = "", state: str = "", error: str = ""):
     if state != config.ML_OAUTH_STATE:
         raise HTTPException(403, "Parâmetro state inválido.")
     import httpx
+    from datetime import datetime, timezone, timedelta
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post("https://api.mercadolibre.com/oauth/token", data={
             "grant_type": "authorization_code",
@@ -122,9 +124,10 @@ async def oauth_callback(code: str = "", state: str = "", error: str = ""):
     data = response.json()
     if not config.supabase_ready():
         raise HTTPException(503, "Configure o Supabase antes de autorizar o Mercado Livre.")
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=int(data.get("expires_in") or 0))).isoformat()
     get_db().table("extrator_settings").upsert({
         "key": "ml_oauth",
-        "value": {"access_token": data.get("access_token", ""), "refresh_token": data.get("refresh_token", ""), "expires_in": data.get("expires_in")}
+        "value": {"access_token": data.get("access_token", ""), "refresh_token": data.get("refresh_token", ""), "expires_at": expires_at}
     }).execute()
     log_event("mercadolivre_oauth_authorized", details={"user_id": data.get("user_id")})
     return {"status": "authorized", "message": "Mercado Livre conectado. Tokens armazenados no banco privado; nenhum token será exibido."}
