@@ -77,10 +77,24 @@ async def health():
 
 @app.get("/status")
 async def status():
+    # A presença das variáveis não garante que a chave funcione.
+    # Faz uma consulta pequena e real ao Supabase, sem expor credenciais.
+    supabase_connection = "not_configured"
+    supabase_error = None
+    if config.supabase_ready():
+        try:
+            get_db().table("extrator_settings").select("key").limit(1).execute()
+            supabase_connection = "ok"
+        except Exception as exc:
+            supabase_connection = "error"
+            supabase_error = type(exc).__name__
+            logger.exception("Teste de conexão com Supabase falhou")
     return {
         "app": "extrator",
         "supabase_configured": config.supabase_ready(),
-        "telegram_configured": bool(config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_ADMIN_IDS and config.TELEGRAM_CHANNEL_ID),
+        "supabase_connection": supabase_connection,
+        "supabase_error": supabase_error,
+        "telegram_configured": config.telegram_ready(),
         "mercadolivre_app_configured": config.mercadolivre_ready(),
         "collector_enabled": config.COLLECTOR_ENABLED,
         "last_collection": runtime["last_collection"],
