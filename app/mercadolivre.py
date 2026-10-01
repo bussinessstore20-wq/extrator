@@ -1,10 +1,12 @@
 import asyncio
 from datetime import datetime, timezone, timedelta
 import httpx
+import logging
 from app import config
 from app.db import get_db, log_event
 
 API = "https://api.mercadolibre.com"
+logger = logging.getLogger(__name__)
 
 def get_saved_tokens() -> dict:
     try:
@@ -122,6 +124,10 @@ def persist_product(item: dict, category_id: str) -> bool:
     return False
 
 async def collect_once() -> dict:
+    # Diagnóstico seguro: valida o token armazenado e registra apenas o ID da conta,
+    # nunca o access token ou refresh token. Ajuda a separar falha OAuth de bloqueio de catálogo.
+    account = await api_get("/users/me")
+    logger.info("Token OAuth Mercado Livre aceito em /users/me; user_id=%s", account.get("id"))
     categories = await get_categories()
     if not isinstance(categories, list) or not categories:
         raise RuntimeError("A API não retornou categorias disponíveis para a coleta.")
