@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 from app import config
@@ -15,6 +16,7 @@ async def send_pending_products(app: Application, limit: int = 10) -> int:
     db = get_db()
     rows = db.table("extrator_products").select("*").eq("status", "pending_approval").is_("review_message_id", "null").order("discovered_at").limit(limit).execute().data or []
     sent = 0
+    admin_chat_id = sorted(config.TELEGRAM_ADMIN_IDS)[0]
     for p in rows:
         caption = f"<b>{escape_html(p['title'])}</b>\n"
         if p.get("price") is not None:
@@ -26,9 +28,9 @@ async def send_pending_products(app: Application, limit: int = 10) -> int:
         ]])
         try:
             if p.get("thumbnail"):
-                msg = await app.bot.send_photo(chat_id=list(config.TELEGRAM_ADMIN_IDS)[0], photo=p["thumbnail"], caption=caption, parse_mode="HTML", reply_markup=keyboard)
+                msg = await app.bot.send_photo(chat_id=admin_chat_id, photo=p["thumbnail"], caption=caption, parse_mode="HTML", reply_markup=keyboard)
             else:
-                msg = await app.bot.send_message(chat_id=list(config.TELEGRAM_ADMIN_IDS)[0], text=caption, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=False)
+                msg = await app.bot.send_message(chat_id=admin_chat_id, text=caption, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=False)
             db.table("extrator_products").update({
                 "review_chat_id": msg.chat_id, "review_message_id": msg.message_id
             }).eq("id", p["id"]).eq("status", "pending_approval").execute()
@@ -60,7 +62,7 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     product = rows[0]
     new_status = "approved" if action == "approve" else "rejected"
     changed = db.table("extrator_products").update({
-        "status": new_status, "reviewed_by": user.id, "reviewed_at": "now()"
+        "status": new_status, "reviewed_by": user.id, "reviewed_at": datetime.now(timezone.utc).isoformat()
     }).eq("id", product_id).eq("status", "pending_approval").execute().data or []
     if not changed:
         await query.answer("A decisão já foi registrada.", show_alert=True)
@@ -72,7 +74,6 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.message.reply_text(f"❌ Reprovado: {product['title']}")
         return
     try:
-        # Mark as publishing before attempting Telegram delivery.
         db.table("extrator_products").update({"status": "publishing"}).eq("id", product_id).eq("status", "approved").execute()
         caption = f"<b>{escape_html(product['title'])}</b>\n"
         if product.get("price") is not None:
@@ -83,7 +84,7 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         else:
             published = await context.bot.send_message(chat_id=config.TELEGRAM_CHANNEL_ID, text=caption, parse_mode="HTML")
         db.table("extrator_products").update({
-            "status": "published", "channel_message_id": published.message_id, "published_at": "now()"
+            "status": "published", "channel_message_id": published.message_id, "published_at": datetime.now(timezone.utc).isoformat()
         }).eq("id", product_id).execute()
         log_event("product_published", product_id, user.id, {"channel_message_id": published.message_id})
         await query.answer("Oferta publicada no canal.")
