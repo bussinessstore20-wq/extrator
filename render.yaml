@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: extrator
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SUPABASE_URL
+        value: https://pwuejvryipyyecjneesy.supabase.co
+      - key: ML_SITE_ID
+        value: MLB
+      - key: COLLECTOR_ENABLED
+        value: "false"
+      - key: COLLECTOR_INTERVAL_SECONDS
+        value: "900"
+      - key: COLLECTOR_CATEGORIES_PER_CYCLE
+        value: "5"
+      - key: COLLECTOR_MAX_ITEMS_PER_CATEGORY
+        value: "50"
