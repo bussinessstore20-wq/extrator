@@ -133,10 +133,4 @@ async def start_bot():
     application.add_handler(CallbackQueryHandler(on_decision, pattern=r"^(approve|reject):"))
     await application.initialize()
     await application.start()
-    await application.bot.set_webhook(
-        url=config.TELEGRAM_WEBHOOK_URL,
-        secret_token=telegram_webhook_secret(),
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=False,
-    )
     return application
