@@ -233,20 +233,24 @@ async def get_user_product_items(user_product_id: str) -> list[str]:
 
 
 async def search_category(category_id: str) -> list[dict]:
-    # O endpoint de destaques só tem ranking para algumas categorias-folha.
-    # Um 404 aqui significa normalmente "sem ranking disponível", não falha fatal.
+    """
+    Procura ofertas pelo ranking de destaques e usa a busca oficial do site
+    como alternativa quando a categoria não possui ranking ou não gera ofertas.
+    """
     limit = max(1, min(config.COLLECTOR_MAX_ITEMS_PER_CATEGORY, 20))
-    try:
-        data = await api_get(f"/highlights/{config.ML_SITE_ID}/category/{category_id}")
-    except RuntimeError as exc:
-        if "HTTP 404" in str(exc):
-            logger.info("Categoria %s sem ranking de mais vendidos; ignorada.", category_id)
-            return []
-        raise
-
-    content = data.get("content", []) if isinstance(data, dict) else []
     items: list[dict] = []
     seen_ids: set[str] = set()
+    content: list[dict] = []
+    candidate_ids: list[str] = []
+
+    try:
+        data = await api_get(f"/highlights/{config.ML_SITE_ID}/category/{category_id}")
+        content = data.get("content", []) if isinstance(data, dict) else []
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            logger.warning("Destaques da categoria %s falharam: %s", category_id, str(exc)[:180])
+        else:
+            logger.info("Categoria %s sem ranking; usando busca oficial como alternativa.", category_id)
 
     for entry in content[:limit]:
         if not isinstance(entry, dict):
@@ -255,37 +259,28 @@ async def search_category(category_id: str) -> list[dict]:
         entity_type = str(entry.get("type") or "").upper()
         if not entity_id:
             continue
-
-        candidate_ids: list[str] = []
-        if entity_type == "PRODUCT":
-            # Produtos de catálogo nem sempre têm publicação vencedora.
+        if entity_type == "ITEM" and entity_id.startswith("MLB"):
+            candidate_ids.append(entity_id)
+        elif entity_type == "PRODUCT":
             try:
                 product = await api_get(f"/products/{entity_id}")
+                winner = product.get("buy_box_winner") if isinstance(product, dict) else None
+                if isinstance(winner, dict) and winner.get("item_id"):
+                    candidate_ids.append(str(winner["item_id"]))
             except Exception as exc:
-                logger.info("Catálogo %s indisponível: %s", entity_id, str(exc)[:140])
-                continue
-            winner = product.get("buy_box_winner") if isinstance(product, dict) else None
-            if isinstance(winner, dict) and winner.get("item_id"):
-                candidate_ids.append(str(winner["item_id"]))
-            else:
-                # Produtos de catálogo sem buy_box_winner não são compráveis;
-                # não os gravamos como ofertas.
-                logger.debug("Produto de catálogo %s sem anúncio vencedor.", entity_id)
-                continue
+                logger.info("Catálogo %s indisponível: %s", entity_id, str(exc)[:120])
         elif entity_type == "USER_PRODUCT" or entity_id.startswith("MLBU"):
-            logger.debug(
-                "User Product %s ignorado: acesso não disponível para a aplicação.",
-                entity_id
-            )
-            continue
-        elif entity_type == "ITEM":
-            candidate_ids.append(entity_id)
+            try:
+                candidate_ids.extend(await get_user_product_items(entity_id))
+            except Exception as exc:
+                logger.info("User Product %s não resolvido: %s", entity_id, str(exc)[:120])
         else:
             logger.debug("Tipo de destaque não suportado: %s (%s).", entity_type, entity_id)
-            continue
 
-        for item_id in candidate_ids:
-            if item_id in seen_ids:
+    async def fetch_candidates(ids: list[str]) -> None:
+        for item_id in ids:
+            item_id = str(item_id or "").strip()
+            if not item_id.startswith("MLB") or item_id in seen_ids:
                 continue
             seen_ids.add(item_id)
             normalized = None
@@ -296,14 +291,41 @@ async def search_category(category_id: str) -> list[dict]:
             except Exception as exc:
                 message = str(exc)
                 if "HTTP 403" in message or "access_denied" in message:
-                    # Desde 2025/2026, a API pode bloquear detalhes de anúncios
-                    # públicos para algumas aplicações, mesmo com OAuth válido.
                     normalized = await public_page_fallback(item_id)
                 if normalized is None:
-                    logger.info("Anúncio %s não pôde ser recuperado por API/fallback: %s", item_id, message[:160])
+                    logger.info("Anúncio %s não recuperado por API/fallback: %s", item_id, message[:160])
             if normalized:
                 items.append(normalized)
 
+    await fetch_candidates(candidate_ids[:limit])
+
+    # A API de destaques não possui ranking para todas as categorias. A busca
+    # oficial /sites/{site}/search é o caminho de fallback documentado pelo ML.
+    if len(items) < limit:
+        try:
+            data = await api_get(
+                f"/sites/{config.ML_SITE_ID}/search",
+                params={"category": category_id, "limit": limit, "sort": "relevance"},
+            )
+            search_results = data.get("results", []) if isinstance(data, dict) else []
+            search_ids = [
+                str(row.get("id") or "")
+                for row in search_results
+                if isinstance(row, dict) and row.get("id")
+            ]
+            before = len(items)
+            await fetch_candidates(search_ids)
+            logger.info(
+                "Fallback de busca da categoria %s: resultados_api=%s, novos_validos=%s",
+                category_id, len(search_results), len(items) - before
+            )
+        except Exception as exc:
+            logger.warning("Busca oficial da categoria %s falhou: %s", category_id, str(exc)[:200])
+
+    logger.info(
+        "Categoria %s: destaques=%s, IDs candidatos=%s, produtos válidos=%s",
+        category_id, len(content), len(candidate_ids), len(items)
+    )
     return items
 
 def persist_product(item: dict, category_id: str) -> bool:
