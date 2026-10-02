@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("extrator")
-runtime = {"bot": None, "collector_task": None, "review_task": None, "last_collection": None, "last_error": None}
+runtime = {"bot": None, "collector_task": None, "review_task": None, "webhook_task": None, "last_collection": None, "last_error": None}
 
 async def collector_loop():
     while True:
@@ -43,6 +43,29 @@ async def review_loop():
             logger.exception("Falha ao despachar fila de aprovação")
             await asyncio.sleep(15)
 
+async def webhook_loop():
+    """Configura o webhook com novas tentativas sem bloquear a inicialização da API."""
+    delay = 5
+    while True:
+        try:
+            application = runtime.get("bot")
+            if application and config.TELEGRAM_WEBHOOK_URL:
+                await application.bot.set_webhook(
+                    url=config.TELEGRAM_WEBHOOK_URL,
+                    secret_token=telegram_webhook_secret(),
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=False,
+                )
+                logger.info("Webhook do Telegram configurado com sucesso")
+                return
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Não foi possível configurar o webhook do Telegram; nova tentativa em %s s", delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 300)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_ADMIN_IDS:
@@ -50,10 +73,12 @@ async def lifespan(app: FastAPI):
             runtime["bot"] = await start_bot()
         except Exception:
             logger.exception("Não foi possível iniciar o bot Telegram")
+    if runtime["bot"]:
+        runtime["webhook_task"] = asyncio.create_task(webhook_loop())
     runtime["collector_task"] = asyncio.create_task(collector_loop())
     runtime["review_task"] = asyncio.create_task(review_loop())
     yield
-    for key in ("collector_task", "review_task"):
+    for key in ("collector_task", "review_task", "webhook_task"):
         task = runtime.get(key)
         if task:
             task.cancel()
