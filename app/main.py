@@ -1,12 +1,14 @@
 import asyncio
 import logging
+import secrets
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, HTMLResponse
 from app import config
 from app.db import get_db, log_event
 from app.mercadolivre import collect_once
-from app.telegram_bot import start_bot, send_pending_products
+from telegram import Update
+from app.telegram_bot import start_bot, send_pending_products, telegram_webhook_secret
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # HTTP client URLs may contain Telegram bot tokens; never emit them in application logs.
@@ -62,8 +64,10 @@ async def lifespan(app: FastAPI):
     bot = runtime.get("bot")
     if bot:
         try:
-            await bot.updater.stop()
             await bot.stop()
+        except Exception:
+            logger.exception("Erro ao parar o bot")
+        try:
             await bot.shutdown()
         except Exception:
             logger.exception("Erro ao encerrar o bot")
@@ -77,6 +81,24 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    application = runtime.get("bot")
+    if not application:
+        raise HTTPException(status_code=503, detail="Bot Telegram ainda não está inicializado.")
+    received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not secrets.compare_digest(received_secret, telegram_webhook_secret()):
+        raise HTTPException(status_code=403, detail="Não autorizado.")
+    try:
+        payload = await request.json()
+        update = Update.de_json(payload, application.bot)
+        await application.process_update(update)
+    except Exception:
+        logger.exception("Falha ao processar atualização do Telegram")
+        raise HTTPException(status_code=500, detail="Falha ao processar atualização.")
+    return {"ok": True}
 
 @app.get("/status")
 async def status():
