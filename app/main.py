@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 from app import config
 from app.db import get_db, log_event
 from app.mercadolivre import collect_once
+from app.shopee import collect_once as collect_shopee_once, shopee_ready
 from telegram import Update
 from app.telegram_bot import start_bot, send_pending_products, telegram_webhook_secret
 
@@ -15,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("extrator")
-runtime = {"bot": None, "collector_task": None, "review_task": None, "webhook_task": None, "last_collection": None, "last_error": None}
+runtime = {"bot": None, "collector_task": None, "shopee_task": None, "review_task": None, "webhook_task": None, "last_collection": None, "last_error": None, "shopee_last_collection": None, "shopee_last_error": None}
 
 async def collector_loop():
     while True:
@@ -36,6 +37,27 @@ async def collector_loop():
             runtime["last_error"] = str(exc)[:500]
             logger.exception("Falha no ciclo de coleta")
             await asyncio.sleep(min(config.COLLECTOR_INTERVAL_SECONDS, 300))
+
+async def shopee_collector_loop():
+    """Rotina Shopee separada; permanece desligada até SHOPEE_COLLECTOR_ENABLED=true."""
+    while True:
+        try:
+            if config.SHOPEE_COLLECTOR_ENABLED and config.supabase_ready() and shopee_ready():
+                result = await collect_shopee_once()
+                runtime["shopee_last_collection"] = result
+                category_errors = result.get("category_errors") or []
+                runtime["shopee_last_error"] = (
+                    str(category_errors[0].get("error") or "Falha na busca Shopee")[:500]
+                    if category_errors else
+                    ("A API Shopee não retornou produtos." if result.get("items_seen", 0) == 0 else None)
+                )
+            await asyncio.sleep(config.SHOPEE_COLLECTOR_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            runtime["shopee_last_error"] = str(exc)[:500]
+            logger.exception("Falha no ciclo de coleta Shopee")
+            await asyncio.sleep(min(config.SHOPEE_COLLECTOR_INTERVAL_SECONDS, 300))
 
 async def review_loop():
     while True:
@@ -82,9 +104,10 @@ async def lifespan(app: FastAPI):
     if runtime["bot"]:
         runtime["webhook_task"] = asyncio.create_task(webhook_loop())
     runtime["collector_task"] = asyncio.create_task(collector_loop())
+    runtime["shopee_task"] = asyncio.create_task(shopee_collector_loop())
     runtime["review_task"] = asyncio.create_task(review_loop())
     yield
-    for key in ("collector_task", "review_task", "webhook_task"):
+    for key in ("collector_task", "shopee_task", "review_task", "webhook_task"):
         task = runtime.get(key)
         if task:
             task.cancel()
@@ -152,6 +175,10 @@ async def status():
         "supabase_error": supabase_error,
         "telegram_configured": config.telegram_ready(),
         "mercadolivre_app_configured": config.mercadolivre_ready(),
+        "shopee_app_configured": shopee_ready(),
+        "shopee_collector_enabled": config.SHOPEE_COLLECTOR_ENABLED,
+        "shopee_last_collection": runtime["shopee_last_collection"],
+        "shopee_last_error": runtime["shopee_last_error"],
         "collector_enabled": config.COLLECTOR_ENABLED,
         "last_collection": runtime["last_collection"],
         "last_error": runtime["last_error"],
@@ -262,6 +289,31 @@ async def run_collection(x_admin_secret: str | None = Header(default=None)):
         runtime["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
         logger.exception("Falha na coleta manual do Mercado Livre")
         raise HTTPException(502, f"Coleta bloqueada: {str(exc)[:450]}. Se o código for PA_UNAUTHORIZED_RESULT_FROM_POLICIES, habilite as permissões funcionais necessárias no DevCenter do Mercado Livre e confirme que o app está ativo.") from exc
+
+
+@app.post("/admin/shopee/collector/run")
+async def run_shopee_collection(x_admin_secret: str | None = Header(default=None)):
+    if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
+        raise HTTPException(403, "Não autorizado.")
+    if not config.supabase_ready():
+        raise HTTPException(503, "Supabase não configurado.")
+    if not shopee_ready():
+        raise HTTPException(503, "Configure SHOPEE_AFFILIATE_APP_ID e SHOPEE_AFFILIATE_SECRET nas variáveis do Render.")
+    try:
+        result = await collect_shopee_once()
+        runtime["shopee_last_collection"] = result
+        category_errors = result.get("category_errors") or []
+        runtime["shopee_last_error"] = (
+            str(category_errors[0].get("error") or "Falha na busca Shopee")[:500]
+            if category_errors else
+            ("A API Shopee não retornou produtos." if result.get("items_seen", 0) == 0 else None)
+        )
+        result_status = "partial" if category_errors else ("empty" if result.get("items_seen", 0) == 0 else "completed")
+        return {"status": result_status, **result, "automatic_collection_enabled": config.SHOPEE_COLLECTOR_ENABLED}
+    except Exception as exc:
+        runtime["shopee_last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+        logger.exception("Falha na coleta manual da Shopee")
+        raise HTTPException(502, f"Coleta Shopee falhou: {str(exc)[:450]}") from exc
 
 
 @app.get('/admin/collector', response_class=HTMLResponse)
