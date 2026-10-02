@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import httpx
 import logging
+from html.parser import HTMLParser
+from html import unescape
 from app import config
 from app.db import get_db, log_event
 
@@ -123,6 +125,76 @@ async def get_categories() -> list[dict]:
     logger.info("Categorias-folha descobertas: %s (nós consultados: %s).", len(leaves), len(visited))
     return leaves
 
+class _MetaParser(HTMLParser):
+    """Extrai metadados públicos de uma página de anúncio, sem executar JavaScript."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.meta = {}
+        self.canonical = ""
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag.lower() == "meta":
+            key = (attrs.get("property") or attrs.get("name") or "").strip().lower()
+            value = (attrs.get("content") or "").strip()
+            if key and value:
+                self.meta[key] = value
+        elif tag.lower() == "link" and "canonical" in (attrs.get("rel") or "").lower():
+            self.canonical = (attrs.get("href") or "").strip()
+
+
+async def public_page_fallback(item_id: str) -> dict | None:
+    """
+    Fallback para anúncios públicos quando a API /items/{id} devolve 403.
+    Usa apenas metadados da página pública; não inventa preço ou título ausentes.
+    """
+    if not item_id.startswith("MLB") or not item_id[3:].isdigit():
+        return None
+    page_url = f"https://produto.mercadolivre.com.br/MLB-{item_id[3:]}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; Extrator/1.0)",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers=headers) as client:
+            response = await client.get(page_url)
+        if response.status_code >= 400:
+            logger.info("Fallback público do anúncio %s respondeu HTTP %s.", item_id, response.status_code)
+            return None
+        parser = _MetaParser()
+        parser.feed(response.text[:2_000_000])
+        meta = parser.meta
+        title = unescape(meta.get("og:title") or meta.get("twitter:title") or "").strip()
+        title = title.replace(" | Mercado Livre", "").replace(" - Mercado Livre", "").strip()
+        permalink = parser.canonical or str(response.url)
+        thumbnail = meta.get("og:image") or meta.get("twitter:image")
+        price_raw = meta.get("product:price:amount") or meta.get("og:price:amount")
+        currency = meta.get("product:price:currency") or meta.get("og:price:currency") or "BRL"
+        try:
+            price = float(price_raw.replace(",", ".")) if price_raw else None
+        except (TypeError, ValueError):
+            price = None
+        if not title or not permalink:
+            logger.info("Fallback público do anúncio %s não encontrou título/link nos metadados.", item_id)
+            return None
+        logger.info("Anúncio %s recuperado por metadados da página pública.", item_id)
+        return {
+            "id": item_id,
+            "title": title,
+            "price": price,
+            "currency_id": currency,
+            "thumbnail": thumbnail,
+            "permalink": permalink,
+            "condition": None,
+            "available_quantity": None,
+            "official_store_id": None,
+        }
+    except Exception as exc:
+        logger.info("Fallback público do anúncio %s falhou: %s", item_id, str(exc)[:180])
+        return None
+
+
 def normalize_item(item: dict) -> dict | None:
     """Converte um anúncio real da API para o formato interno do Extrator."""
     item_id = str(item.get("id") or "").strip()
@@ -216,15 +288,21 @@ async def search_category(category_id: str) -> list[dict]:
             if item_id in seen_ids:
                 continue
             seen_ids.add(item_id)
+            normalized = None
             try:
                 raw_item = await api_get(f"/items/{item_id}")
+                if isinstance(raw_item, dict):
+                    normalized = normalize_item(raw_item)
             except Exception as exc:
-                logger.info("Anúncio %s não acessível pela API: %s", item_id, str(exc)[:160])
-                continue
-            if isinstance(raw_item, dict):
-                normalized = normalize_item(raw_item)
-                if normalized:
-                    items.append(normalized)
+                message = str(exc)
+                if "HTTP 403" in message or "access_denied" in message:
+                    # Desde 2025/2026, a API pode bloquear detalhes de anúncios
+                    # públicos para algumas aplicações, mesmo com OAuth válido.
+                    normalized = await public_page_fallback(item_id)
+                if normalized is None:
+                    logger.info("Anúncio %s não pôde ser recuperado por API/fallback: %s", item_id, message[:160])
+            if normalized:
+                items.append(normalized)
 
     return items
 
