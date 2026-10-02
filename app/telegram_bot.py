@@ -26,7 +26,14 @@ async def send_pending_products(app: Application, limit: int = 10) -> int:
     sent = 0
     admin_chat_id = sorted(config.TELEGRAM_ADMIN_IDS)[0]
     for p in rows:
-        caption = f"🔗 <a href=\"{escape_html(p['permalink'])}\">Abrir produto no Mercado Livre</a>\n\nID: <code>{p['item_id']}</code>"
+        is_shopee = str(p.get("site_id") or "").upper() == "SHOPEE"
+        # Shopee items are only sent when national shipping is explicitly confirmed.
+        if is_shopee and not is_confirmed_national_shopee(p):
+            continue
+        permalink = str(p.get("permalink") or "").strip()
+        if not permalink:
+            continue
+        caption = permalink if is_shopee else f"🔗 <a href=\"{escape_html(permalink)}\">Abrir produto no Mercado Livre</a>\n\nID: <code>{p['item_id']}</code>"
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Aprovar", callback_data=f"approve:{p['id']}"),
             InlineKeyboardButton("❌ Reprovar", callback_data=f"reject:{p['id']}"),
@@ -85,8 +92,11 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     try:
         db.table("extrator_products").update({"status": "publishing"}).eq("id", product_id).eq("status", "approved").execute()
-        caption = f"🔗 <a href=\"{escape_html(product['permalink'])}\">🛒 Ver oferta no Mercado Livre</a>\n\nID: <code>{product['item_id']}</code>"
-        if product.get("thumbnail"):
+        is_shopee = str(product.get("site_id") or "").upper() == "SHOPEE"
+        caption = product["permalink"] if is_shopee else f"🔗 <a href=\"{escape_html(product['permalink'])}\">🛒 Ver oferta no Mercado Livre</a>\n\nID: <code>{product['item_id']}</code>"
+        if is_shopee:
+            published = await context.bot.send_message(chat_id=config.TELEGRAM_CHANNEL_ID, text=caption, disable_web_page_preview=True)
+        elif product.get("thumbnail"):
             published = await context.bot.send_photo(chat_id=config.TELEGRAM_CHANNEL_ID, photo=product["thumbnail"], caption=caption, parse_mode="HTML")
         else:
             published = await context.bot.send_message(chat_id=config.TELEGRAM_CHANNEL_ID, text=caption, parse_mode="HTML")
