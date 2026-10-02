@@ -19,10 +19,7 @@ async def send_pending_products(app: Application, limit: int = 10) -> int:
     sent = 0
     admin_chat_id = sorted(config.TELEGRAM_ADMIN_IDS)[0]
     for p in rows:
-        caption = f"<b>{escape_html(p['title'])}</b>\n"
-        if p.get("price") is not None:
-            caption += f"Preço informado pela API: R$ {float(p['price']):.2f}\n"
-        caption += f"\n<a href=\"{escape_html(p['permalink'])}\">Abrir produto no Mercado Livre</a>\n\nID: <code>{p['item_id']}</code>"
+        caption = f"🔗 <a href=\"{escape_html(p['permalink'])}\">Abrir produto no Mercado Livre</a>\n\nID: <code>{p['item_id']}</code>"
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Aprovar", callback_data=f"approve:{p['id']}"),
             InlineKeyboardButton("❌ Reprovar", callback_data=f"reject:{p['id']}"),
@@ -76,10 +73,7 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     try:
         db.table("extrator_products").update({"status": "publishing"}).eq("id", product_id).eq("status", "approved").execute()
-        caption = f"<b>{escape_html(product['title'])}</b>\n"
-        if product.get("price") is not None:
-            caption += f"Preço informado pela API: R$ {float(product['price']):.2f}\n"
-        caption += f"\n<a href=\"{escape_html(product['permalink'])}\">🛒 Ver oferta no Mercado Livre</a>"
+        caption = f"🔗 <a href=\"{escape_html(product['permalink'])}\">🛒 Ver oferta no Mercado Livre</a>\n\nID: <code>{product['item_id']}</code>"
         if product.get("thumbnail"):
             published = await context.bot.send_photo(chat_id=config.TELEGRAM_CHANNEL_ID, photo=product["thumbnail"], caption=caption, parse_mode="HTML")
         else:
