@@ -192,6 +192,7 @@ def persist_product(item: dict, category_id: str) -> bool:
 
 
 async def collect_once() -> dict:
+    """Collect up to five new Shopee products, accepting only confirmed Brazilian origin."""
     if not shopee_ready():
         raise RuntimeError("Credenciais da API de afiliados Shopee ausentes.")
     if not config.supabase_ready():
@@ -203,18 +204,28 @@ async def collect_once() -> dict:
     cursor = int(settings.get("category_cursor", 0)) % len(categories)
     count = min(config.SHOPEE_CATEGORIES_PER_CYCLE, len(categories))
     selected = [categories[(cursor + i) % len(categories)] for i in range(count)]
+    max_new_products = min(5, max(1, config.SHOPEE_MAX_ITEMS_PER_CYCLE))
     run = db.table("extrator_collection_runs").insert({
         "status": "running",
-        "details": {"platform": "shopee"},
+        "details": {
+            "platform": "shopee",
+            "max_new_products": max_new_products,
+            "interval_seconds": config.SHOPEE_COLLECTOR_INTERVAL_SECONDS,
+            "shipping_filter": "national_only_fail_closed",
+        },
     }).execute().data[0]
     seen = new_items = errors = 0
     accepted_national = excluded_international = excluded_unknown_origin = 0
     category_errors = []
     for category in selected:
+        if new_items >= max_new_products:
+            break
         try:
             items = await search_category(category)
             seen += len(items)
             for item in items:
+                if new_items >= max_new_products:
+                    break
                 accepted, origin_status = classify_shipping_origin(item)
                 item.setdefault("metadata", {})["shipping_origin_filter"] = origin_status
                 if not accepted:
@@ -240,9 +251,25 @@ async def collect_once() -> dict:
                 "platform": "shopee", "category_id": category["id"], "error": error_text,
             })
     next_cursor = (cursor + count) % len(categories)
-    settings.update({"enabled": config.SHOPEE_COLLECTOR_ENABLED, "category_cursor": next_cursor})
+    settings.update({
+        "enabled": config.SHOPEE_COLLECTOR_ENABLED,
+        "category_cursor": next_cursor,
+        "interval_seconds": config.SHOPEE_COLLECTOR_INTERVAL_SECONDS,
+        "max_new_products_per_cycle": max_new_products,
+        "shipping_origin_policy": "confirmed_national_only",
+    })
     db.table("extrator_settings").upsert({"key": "shopee_collector", "value": settings}).execute()
-    status = "partial" if errors else ("failed" if seen == 0 else "completed")
+    status = "partial" if errors else ("empty" if accepted_national == 0 else "completed")
+    details = {
+        "platform": "shopee",
+        "next_category_cursor": next_cursor,
+        "shipping_filter": "national_only_fail_closed",
+        "max_new_products": max_new_products,
+        "interval_seconds": config.SHOPEE_COLLECTOR_INTERVAL_SECONDS,
+        "accepted_national": accepted_national,
+        "excluded_international": excluded_international,
+        "excluded_unknown_origin": excluded_unknown_origin,
+    }
     db.table("extrator_collection_runs").update({
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "status": status,
@@ -250,7 +277,7 @@ async def collect_once() -> dict:
         "items_seen": seen,
         "new_items": new_items,
         "error_count": errors,
-        "details": {"platform": "shopee", "next_category_cursor": next_cursor, "shipping_filter": "national_only_fail_closed", "accepted_national": accepted_national, "excluded_international": excluded_international, "excluded_unknown_origin": excluded_unknown_origin},
+        "details": details,
     }).eq("id", run["id"]).execute()
     return {
         "platform": "shopee",
@@ -260,7 +287,13 @@ async def collect_once() -> dict:
         "excluded_international": excluded_international,
         "excluded_unknown_origin": excluded_unknown_origin,
         "shipping_filter": "national_only_fail_closed",
+        "max_new_products": max_new_products,
+        "interval_seconds": config.SHOPEE_COLLECTOR_INTERVAL_SECONDS,
         "new_items": new_items,
         "errors": errors,
         "category_errors": category_errors[:5],
+        "warning": (
+            "A API oficial não retornou dados de origem de envio; nenhum produto de origem desconhecida será enviado."
+            if excluded_unknown_origin and accepted_national == 0 else None
+        ),
     }
