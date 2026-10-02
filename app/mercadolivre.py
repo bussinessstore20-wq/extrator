@@ -78,14 +78,58 @@ async def api_get(path: str, params: dict | None = None):
 async def get_categories() -> list[dict]:
     return await api_get(f"/sites/{config.ML_SITE_ID}/categories")
 
+def normalize_item(item: dict) -> dict | None:
+    """Converte um anúncio real da API para o formato interno do Extrator."""
+    item_id = str(item.get("id") or "").strip()
+    title = str(item.get("title") or "").strip()
+    permalink = str(item.get("permalink") or "").strip()
+    if not item_id or not title or not permalink:
+        return None
+    pictures = item.get("pictures") or []
+    thumbnail = item.get("thumbnail")
+    if not thumbnail and pictures and isinstance(pictures[0], dict):
+        thumbnail = pictures[0].get("secure_url") or pictures[0].get("url")
+    return {
+        "id": item_id,
+        "title": title,
+        "price": item.get("price"),
+        "currency_id": item.get("currency_id") or "BRL",
+        "thumbnail": thumbnail,
+        "permalink": permalink,
+        "condition": item.get("condition"),
+        "available_quantity": item.get("available_quantity"),
+        "official_store_id": item.get("official_store_id"),
+    }
+
+
+async def get_user_product_items(user_product_id: str) -> list[str]:
+    """Resolve um User Product para os IDs de anúncios associados."""
+    up = await api_get(f"/user-products/{user_product_id}")
+    seller_id = up.get("user_id")
+    if not seller_id:
+        return []
+    result = await api_get(
+        f"/users/{seller_id}/items/search",
+        params={"user_product_id": user_product_id, "limit": 10},
+    )
+    return [str(x) for x in (result.get("results") or []) if x]
+
+
 async def search_category(category_id: str) -> list[dict]:
-    # A busca genérica /sites/{site}/search está bloqueada para este aplicativo.
-    # Os destaques documentam três tipos distintos: ITEM, PRODUCT e USER_PRODUCT.
-    # Não tratar IDs desses tipos como se fossem todos IDs de /items.
+    # O endpoint de destaques só tem ranking para algumas categorias-folha.
+    # Um 404 aqui significa normalmente "sem ranking disponível", não falha fatal.
     limit = max(1, min(config.COLLECTOR_MAX_ITEMS_PER_CATEGORY, 20))
-    data = await api_get(f"/highlights/{config.ML_SITE_ID}/category/{category_id}")
+    try:
+        data = await api_get(f"/highlights/{config.ML_SITE_ID}/category/{category_id}")
+    except RuntimeError as exc:
+        if "HTTP 404" in str(exc):
+            logger.info("Categoria %s sem ranking de mais vendidos; ignorada.", category_id)
+            return []
+        raise
+
     content = data.get("content", []) if isinstance(data, dict) else []
     items: list[dict] = []
+    seen_ids: set[str] = set()
 
     for entry in content[:limit]:
         if not isinstance(entry, dict):
@@ -95,41 +139,47 @@ async def search_category(category_id: str) -> list[dict]:
         if not entity_id:
             continue
 
+        candidate_ids: list[str] = []
         if entity_type == "PRODUCT":
-            # Produto de catálogo: consulta seu recurso próprio, não /items/{product_id}.
+            # Produtos de catálogo nem sempre têm publicação vencedora.
             try:
                 product = await api_get(f"/products/{entity_id}")
             except Exception as exc:
-                logger.warning("Falha ao consultar produto de catálogo %s: %s", entity_id, str(exc)[:180])
+                logger.info("Catálogo %s indisponível: %s", entity_id, str(exc)[:140])
                 continue
-            if not isinstance(product, dict):
+            winner = product.get("buy_box_winner") if isinstance(product, dict) else None
+            if isinstance(winner, dict) and winner.get("item_id"):
+                candidate_ids.append(str(winner["item_id"]))
+            else:
+                # Produtos de catálogo sem buy_box_winner não são compráveis;
+                # não os gravamos como ofertas.
+                logger.debug("Produto de catálogo %s sem anúncio vencedor.", entity_id)
                 continue
-            winner = product.get("buy_box_winner")
-            if not isinstance(winner, dict):
-                logger.info("Produto de catálogo %s sem buy_box_winner; ignorado.", entity_id)
+        elif entity_type == "USER_PRODUCT" or entity_id.startswith("MLBU"):
+            try:
+                candidate_ids.extend(await get_user_product_items(entity_id))
+            except Exception as exc:
+                logger.info("Não foi possível resolver User Product %s: %s", entity_id, str(exc)[:160])
                 continue
-            item_id = str(winner.get("item_id") or "").strip()
-            title = str(product.get("name") or product.get("family_name") or "").strip()
-            permalink = str(product.get("permalink") or "").strip()
-            pictures = product.get("pictures") or []
-            thumbnail = pictures[0].get("url") if pictures and isinstance(pictures[0], dict) else None
-            if item_id and title and permalink:
-                items.append({
-                    "id": item_id,
-                    "title": title,
-                    "price": winner.get("price"),
-                    "currency_id": winner.get("currency_id") or "BRL",
-                    "thumbnail": thumbnail,
-                    "permalink": permalink,
-                    "condition": winner.get("condition"),
-                    "available_quantity": winner.get("available_quantity"),
-                    "official_store_id": winner.get("official_store_id"),
-                })
+        elif entity_type == "ITEM":
+            candidate_ids.append(entity_id)
+        else:
+            logger.debug("Tipo de destaque não suportado: %s (%s).", entity_type, entity_id)
             continue
 
-        # IDs ITEM e USER_PRODUCT não são intercambiáveis com product IDs.
-        # A consulta a /items/{id} já retorna 403/404 neste aplicativo.
-        logger.info("Destaque ignorado: type=%s id=%s; não é seguro consultar como item genérico.", entity_type or "desconhecido", entity_id)
+        for item_id in candidate_ids:
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            try:
+                raw_item = await api_get(f"/items/{item_id}")
+            except Exception as exc:
+                logger.info("Anúncio %s não acessível pela API: %s", item_id, str(exc)[:160])
+                continue
+            if isinstance(raw_item, dict):
+                normalized = normalize_item(raw_item)
+                if normalized:
+                    items.append(normalized)
 
     return items
 
