@@ -258,8 +258,18 @@ async def get_user_product_items(user_product_id: str) -> list[str]:
 
 
 async def search_category(category_id: str) -> list[dict]:
-    limit = max(1, min(config.COLLECTOR_MAX_ITEMS_PER_CATEGORY, 20))
-    return await public_category_fallback(category_id, limit)
+    """Busca produtos pela API oficial; não depende de scraping de páginas bloqueadas."""
+    limit = max(1, min(config.COLLECTOR_MAX_ITEMS_PER_CATEGORY, 50))
+    query = str(category_id or "").strip().replace("_", " ")
+    if not query:
+        raise RuntimeError("Termo de busca vazio.")
+    payload = await api_get(
+        f"/sites/{config.ML_SITE_ID}/search",
+        params={"q": query, "limit": limit},
+    )
+    results = payload.get("results") or []
+    normalized = [normalize_item(item) for item in results if isinstance(item, dict)]
+    return [item for item in normalized if item]
 
 
 def persist_product(item: dict, category_id: str) -> bool:
@@ -315,6 +325,7 @@ async def collect_once() -> dict:
     selected = [categories[(cursor + i) % len(categories)] for i in range(count)]
     run = db.table("extrator_collection_runs").insert({"status": "running"}).execute().data[0]
     seen = new_items = errors = 0
+    category_errors = []
     for category in selected:
         category_id = str(category.get("id", ""))
         if not category_id:
@@ -331,17 +342,25 @@ async def collect_once() -> dict:
             await asyncio.sleep(1.0)
         except Exception as exc:
             errors += 1
-            log_event("category_collection_error", details={"category_id": category_id, "error": str(exc)[:500]})
+            error_text = str(exc)[:500]
+            category_errors.append({"category_id": category_id, "error": error_text})
+            log_event("category_collection_error", details={"category_id": category_id, "error": error_text})
     next_cursor = (cursor + count) % len(categories)
     settings.update({"enabled": config.COLLECTOR_ENABLED, "category_cursor": next_cursor})
     db.table("extrator_settings").upsert({"key": "collector", "value": settings}).execute()
     db.table("extrator_collection_runs").update({
         "finished_at": datetime.now(timezone.utc).isoformat(),
-        "status": "completed" if errors == 0 else "partial",
+        "status": "partial" if errors else ("empty" if seen == 0 else "completed"),
         "categories_seen": count,
         "items_seen": seen,
         "new_items": new_items,
         "error_count": errors,
         "details": {"next_category_cursor": next_cursor},
     }).eq("id", run["id"]).execute()
-    return {"categories_seen": count, "items_seen": seen, "new_items": new_items, "errors": errors}
+    return {
+        "categories_seen": count,
+        "items_seen": seen,
+        "new_items": new_items,
+        "errors": errors,
+        "category_errors": category_errors[:5],
+    }
