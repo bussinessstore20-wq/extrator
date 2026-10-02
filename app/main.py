@@ -21,8 +21,14 @@ async def collector_loop():
     while True:
         try:
             if config.COLLECTOR_ENABLED and config.supabase_ready() and config.ML_CLIENT_ID:
-                runtime["last_collection"] = await collect_once()
-                runtime["last_error"] = None
+                result = await collect_once()
+                runtime["last_collection"] = result
+                category_errors = result.get("category_errors") or []
+                runtime["last_error"] = (
+                    str(category_errors[0].get("error") or "Falha na busca do Mercado Livre")[:500]
+                    if category_errors else
+                    ("A busca não retornou produtos; verifique o acesso à API de busca." if result.get("items_seen", 0) == 0 else None)
+                )
             await asyncio.sleep(config.COLLECTOR_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             raise
@@ -153,14 +159,31 @@ async def status():
 
 @app.get("/oauth/mercadolivre/start")
 async def oauth_start():
-    if not config.mercadolivre_ready() or not config.ML_OAUTH_STATE:
-        raise HTTPException(503, "Configure ML_CLIENT_ID, ML_CLIENT_SECRET, ML_REDIRECT_URI e ML_OAUTH_STATE no Render.")
+    if not config.mercadolivre_ready():
+        raise HTTPException(503, "Configure ML_CLIENT_ID, ML_CLIENT_SECRET e ML_REDIRECT_URI no Render.")
+    if not config.supabase_ready():
+        raise HTTPException(503, "Configure o Supabase antes de iniciar a autorização OAuth.")
+    import base64
+    import hashlib
+    from datetime import datetime, timezone
     from urllib.parse import urlencode
+
+    # PKCE S256: verifier and state are generated for each authorization attempt.
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    state = secrets.token_urlsafe(32)
+    get_db().table("extrator_settings").upsert({
+        "key": "ml_oauth_pkce",
+        "value": {"state": state, "code_verifier": verifier, "created_at": datetime.now(timezone.utc).isoformat()},
+    }).execute()
+
     params = urlencode({
         "response_type": "code",
         "client_id": config.ML_CLIENT_ID,
         "redirect_uri": config.ML_REDIRECT_URI,
-        "state": config.ML_OAUTH_STATE,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
     })
     return RedirectResponse(f"https://auth.mercadolivre.com.br/authorization?{params}", status_code=302)
 
@@ -168,12 +191,28 @@ async def oauth_start():
 async def oauth_callback(code: str = "", state: str = "", error: str = ""):
     if error:
         raise HTTPException(400, f"Autorização recusada pelo Mercado Livre: {error}")
-    if not code or not config.mercadolivre_ready() or not config.ML_OAUTH_STATE:
+    if not code or not state or not config.mercadolivre_ready():
         raise HTTPException(400, "Código OAuth ou configuração ausente.")
-    if state != config.ML_OAUTH_STATE:
-        raise HTTPException(403, "Parâmetro state inválido.")
-    import httpx
+    if not config.supabase_ready():
+        raise HTTPException(503, "Configure o Supabase antes de concluir a autorização OAuth.")
+
     from datetime import datetime, timezone, timedelta
+    import httpx
+
+    rows = get_db().table("extrator_settings").select("value").eq("key", "ml_oauth_pkce").limit(1).execute().data
+    pending = (rows[0].get("value") or {}) if rows else {}
+    expected_state = str(pending.get("state") or "")
+    verifier = str(pending.get("code_verifier") or "")
+    created_at = str(pending.get("created_at") or "")
+    if not expected_state or not verifier or not secrets.compare_digest(state, expected_state):
+        raise HTTPException(403, "Estado OAuth inválido ou expirado. Inicie novamente a conexão com o Mercado Livre.")
+    try:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) - created > timedelta(minutes=15):
+            raise HTTPException(400, "A autorização expirou. Inicie novamente a conexão com o Mercado Livre.")
+    except ValueError:
+        raise HTTPException(400, "Não foi possível validar a tentativa OAuth. Inicie novamente a conexão.")
+
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post("https://api.mercadolibre.com/oauth/token", data={
             "grant_type": "authorization_code",
@@ -181,21 +220,27 @@ async def oauth_callback(code: str = "", state: str = "", error: str = ""):
             "client_secret": config.ML_CLIENT_SECRET,
             "code": code,
             "redirect_uri": config.ML_REDIRECT_URI,
+            "code_verifier": verifier,
         })
     if response.status_code >= 400:
-        logger.error("Falha OAuth Mercado Livre HTTP %s", response.status_code)
-        raise HTTPException(502, "O Mercado Livre não concluiu a troca do código. Confira redirect URI e credenciais nos logs do provedor.")
+        provider_error = {}
+        try:
+            payload = response.json()
+            provider_error = {k: payload.get(k) for k in ("error", "message", "error_description") if payload.get(k)}
+        except Exception:
+            pass
+        logger.error("Falha OAuth Mercado Livre HTTP %s; tipo=%s", response.status_code, provider_error.get("error", "não informado"))
+        raise HTTPException(502, f"O Mercado Livre recusou a troca do código (HTTP {response.status_code}). Verifique a URI cadastrada e reinicie a autorização. Detalhe: {str(provider_error)[:250] or 'sem detalhe retornado'}.")
+
     data = response.json()
-    if not config.supabase_ready():
-        raise HTTPException(503, "Configure o Supabase antes de autorizar o Mercado Livre.")
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=int(data.get("expires_in") or 0))).isoformat()
     get_db().table("extrator_settings").upsert({
         "key": "ml_oauth",
         "value": {"access_token": data.get("access_token", ""), "refresh_token": data.get("refresh_token", ""), "expires_at": expires_at}
     }).execute()
+    get_db().table("extrator_settings").delete().eq("key", "ml_oauth_pkce").execute()
     log_event("mercadolivre_oauth_authorized", details={"user_id": data.get("user_id")})
-    return {"status": "authorized", "message": "Mercado Livre conectado. Tokens armazenados no banco privado; nenhum token será exibido."}
-
+    return {"status": "authorized", "message": "Mercado Livre conectado via OAuth com PKCE. Tokens armazenados no banco privado; nenhum token será exibido."}
 @app.post("/admin/collector/run")
 async def run_collection(x_admin_secret: str | None = Header(default=None)):
     if not config.ADMIN_API_SECRET or x_admin_secret != config.ADMIN_API_SECRET:
@@ -205,8 +250,14 @@ async def run_collection(x_admin_secret: str | None = Header(default=None)):
     try:
         result = await collect_once()
         runtime["last_collection"] = result
-        runtime["last_error"] = None
-        return {"status": "completed", **result}
+        category_errors = result.get("category_errors") or []
+        runtime["last_error"] = (
+            str(category_errors[0].get("error") or "Falha na busca do Mercado Livre")[:500]
+            if category_errors else
+            ("A busca não retornou produtos; verifique o acesso à API de busca." if result.get("items_seen", 0) == 0 else None)
+        )
+        result_status = "partial" if category_errors else ("empty" if result.get("items_seen", 0) == 0 else "completed")
+        return {"status": result_status, **result}
     except Exception as exc:
         runtime["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
         logger.exception("Falha na coleta manual do Mercado Livre")
