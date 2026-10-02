@@ -18,6 +18,23 @@ from app.db import get_db, log_event
 API_URL = "https://open-api.affiliate.shopee.com.br/graphql"
 logger = logging.getLogger(__name__)
 
+
+def classify_shipping_origin(product: dict) -> tuple[bool, str]:
+    """Accept only explicitly local products; unknown origin fails closed."""
+    metadata = product.get("metadata") or {}
+    def norm(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    icon_type = norm(metadata.get("shipping_icon_type"))
+    cross_border = norm(metadata.get("cross_border_option"))
+    if icon_type == 1 or cross_border == 1:
+        return False, "international"
+    if icon_type == 0 or cross_border == 0:
+        return True, "national_confirmed"
+    return False, "origin_unknown"
+
 CATEGORIES = [
     {"id": "shopee_ofertas", "name": "Ofertas", "keyword": "ofertas"},
     {"id": "shopee_eletronicos", "name": "Eletrônicos", "keyword": "eletronicos"},
@@ -123,6 +140,8 @@ async def search_category(category: dict) -> list[dict]:
                 "shopee_commission_rate": node.get("shopeeCommissionRate"),
                 "shop_name": node.get("shopName"),
                 "shop_type": node.get("shopType"),
+                "shipping_icon_type": node.get("shippingIconType"),
+                "cross_border_option": node.get("cbOption"),
             },
         })
     return items
@@ -189,12 +208,22 @@ async def collect_once() -> dict:
         "details": {"platform": "shopee"},
     }).execute().data[0]
     seen = new_items = errors = 0
+    accepted_national = excluded_international = excluded_unknown_origin = 0
     category_errors = []
     for category in selected:
         try:
             items = await search_category(category)
             seen += len(items)
             for item in items:
+                accepted, origin_status = classify_shipping_origin(item)
+                item.setdefault("metadata", {})["shipping_origin_filter"] = origin_status
+                if not accepted:
+                    if origin_status == "international":
+                        excluded_international += 1
+                    else:
+                        excluded_unknown_origin += 1
+                    continue
+                accepted_national += 1
                 try:
                     new_items += int(persist_product(item, category["id"]))
                 except Exception as exc:
@@ -221,12 +250,16 @@ async def collect_once() -> dict:
         "items_seen": seen,
         "new_items": new_items,
         "error_count": errors,
-        "details": {"platform": "shopee", "next_category_cursor": next_cursor},
+        "details": {"platform": "shopee", "next_category_cursor": next_cursor, "shipping_filter": "national_only_fail_closed", "accepted_national": accepted_national, "excluded_international": excluded_international, "excluded_unknown_origin": excluded_unknown_origin},
     }).eq("id", run["id"]).execute()
     return {
         "platform": "shopee",
         "categories_seen": count,
         "items_seen": seen,
+        "accepted_national": accepted_national,
+        "excluded_international": excluded_international,
+        "excluded_unknown_origin": excluded_unknown_origin,
+        "shipping_filter": "national_only_fail_closed",
         "new_items": new_items,
         "errors": errors,
         "category_errors": category_errors[:5],
