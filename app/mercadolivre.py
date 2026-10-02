@@ -195,6 +195,47 @@ async def public_page_fallback(item_id: str) -> dict | None:
         return None
 
 
+
+async def public_category_fallback(category_id: str, limit: int) -> list[dict]:
+    """Busca IDs de anúncios na página pública da categoria como último recurso."""
+    import re
+
+    url = "https://lista.mercadolivre.com.br/_Desde_1_NoIndex_True"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as client:
+            response = await client.get(url, params={"category": category_id})
+        if response.status_code >= 400:
+            logger.warning("Busca pública da categoria %s respondeu HTTP %s.", category_id, response.status_code)
+            return []
+        html = response.text[:5_000_000]
+        ids: list[str] = []
+        for pattern in (r'(?<![A-Z0-9])MLB-([0-9]{6,})(?![0-9])', r'(?<![A-Z0-9])MLB([0-9]{6,})(?![0-9])'):
+            for match in re.finditer(pattern, html):
+                item_id = "MLB" + match.group(1)
+                if item_id not in ids:
+                    ids.append(item_id)
+                if len(ids) >= limit * 3:
+                    break
+            if len(ids) >= limit * 3:
+                break
+        recovered = []
+        for item_id in ids:
+            item = await public_page_fallback(item_id)
+            if item:
+                recovered.append(item)
+            if len(recovered) >= limit:
+                break
+        logger.info("Fallback público da categoria %s: IDs encontrados=%s, produtos recuperados=%s", category_id, len(ids), len(recovered))
+        return recovered
+    except Exception as exc:
+        logger.warning("Fallback de página pública da categoria %s falhou: %s", category_id, str(exc)[:180])
+        return []
+
 def normalize_item(item: dict) -> dict | None:
     """Converte um anúncio real da API para o formato interno do Extrator."""
     item_id = str(item.get("id") or "").strip()
@@ -321,6 +362,17 @@ async def search_category(category_id: str) -> list[dict]:
             )
         except Exception as exc:
             logger.warning("Busca oficial da categoria %s falhou: %s", category_id, str(exc)[:200])
+            public_items = await public_category_fallback(category_id, limit - len(items))
+            for public_item in public_items:
+                if public_item["id"] not in seen_ids:
+                    seen_ids.add(public_item["id"])
+                    items.append(public_item)
+    if len(items) < limit and not content and not items:
+        public_items = await public_category_fallback(category_id, limit - len(items))
+        for public_item in public_items:
+            if public_item["id"] not in seen_ids:
+                seen_ids.add(public_item["id"])
+                items.append(public_item)
 
     logger.info(
         "Categoria %s: destaques=%s, IDs candidatos=%s, produtos válidos=%s",
