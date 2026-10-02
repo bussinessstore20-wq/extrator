@@ -41,3 +41,8 @@ def telegram_ready() -> bool:
 
 def mercadolivre_ready() -> bool:
     return bool(ML_CLIENT_ID and ML_CLIENT_SECRET and ML_REDIRECT_URI)
+
+TELEGRAM_WEBHOOK_URL = os.getenv(
+    "TELEGRAM_WEBHOOK_URL",
+    "https://extrator-aclt.onrender.com/telegram/webhook"
+).strip()
