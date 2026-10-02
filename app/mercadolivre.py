@@ -195,7 +195,7 @@ async def public_category_fallback(category_id: str, limit: int) -> list[dict]:
             parser.feed(response.text[:5000000])
             for href in parser.links:
                 link = urljoin(str(response.url), href).split("#", 1)[0]
-                match = re.search(r"/MLB-?([0-9]{6,})(?=[/?]|$)", link, re.I)
+                match = re.search(r"/MLB-?([0-9]{6,})(?=[/?_-]|$)", link, re.I)
                 if not match:
                     continue
                 item_id = "MLB" + match.group(1)
