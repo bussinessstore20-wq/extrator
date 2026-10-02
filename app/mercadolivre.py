@@ -191,6 +191,11 @@ async def public_category_fallback(category_id: str, limit: int) -> list[dict]:
             logger.info("Listagem pública '%s': HTTP %s (%s bytes)", query, response.status_code, len(response.text))
             if response.status_code >= 400:
                 return []
+            body_lower = response.text[:500000].lower()
+            block_markers = ("captcha", "verify you are human", "validar que você é humano", "robot check", "challenge-platform", "cf-chl-", "access denied")
+            if any(marker in body_lower for marker in block_markers):
+                logger.warning("Listagem pública '%s' retornou página de bloqueio/CAPTCHA; coleta interrompida sem tentar contornar a proteção.", query)
+                return []
             parser = _ListingParser()
             parser.feed(response.text[:5000000])
             for href in parser.links:
