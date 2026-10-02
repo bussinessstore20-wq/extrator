@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from datetime import datetime, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -120,6 +121,11 @@ async def on_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def telegram_webhook_secret() -> str:
+    value = f"{config.TELEGRAM_BOT_TOKEN}:extrator-webhook-v1"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 async def start_bot():
     application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", on_start))
@@ -127,5 +133,10 @@ async def start_bot():
     application.add_handler(CallbackQueryHandler(on_decision, pattern=r"^(approve|reject):"))
     await application.initialize()
     await application.start()
-    await application.updater.start_polling(drop_pending_updates=False)
+    await application.bot.set_webhook(
+        url=config.TELEGRAM_WEBHOOK_URL,
+        secret_token=telegram_webhook_secret(),
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=False,
+    )
     return application
