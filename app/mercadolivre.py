@@ -76,7 +76,50 @@ async def api_get(path: str, params: dict | None = None):
         return response.json()
 
 async def get_categories() -> list[dict]:
-    return await api_get(f"/sites/{config.ML_SITE_ID}/categories")
+    # O endpoint do site retorna categorias-raiz; destaques geralmente exige folhas.
+    # Cache de 24h no Supabase evita reconstruir a árvore em cada ciclo.
+    db = get_db()
+    try:
+        rows = db.table("extrator_settings").select("value").eq("key", "ml_leaf_categories").limit(1).execute().data or []
+        cached = rows[0].get("value") if rows else None
+        if isinstance(cached, dict):
+            saved_at = datetime.fromisoformat(str(cached.get("saved_at", "")).replace("Z", "+00:00"))
+            cats = cached.get("categories")
+            if saved_at > datetime.now(timezone.utc) - timedelta(hours=24) and isinstance(cats, list) and cats:
+                return cats
+    except Exception:
+        logger.info("Cache de categorias-folha ausente; reconstruindo.")
+
+    roots = await api_get(f"/sites/{config.ML_SITE_ID}/categories")
+    queue = list(roots or [])
+    leaves: list[dict] = []
+    visited: set[str] = set()
+    max_nodes = 180
+    while queue and len(visited) < max_nodes:
+        category = queue.pop(0)
+        category_id = str(category.get("id") or "").strip()
+        if not category_id or category_id in visited:
+            continue
+        visited.add(category_id)
+        try:
+            details = await api_get(f"/categories/{category_id}")
+        except Exception as exc:
+            logger.debug("Categoria %s não pôde ser expandida: %s", category_id, str(exc)[:120])
+            continue
+        children = details.get("children_categories") or []
+        if children:
+            queue.extend(child for child in children if isinstance(child, dict))
+        else:
+            leaves.append({"id": category_id, "name": details.get("name") or category.get("name") or category_id})
+    if not leaves:
+        return roots or []
+    value = {"saved_at": datetime.now(timezone.utc).isoformat(), "categories": leaves}
+    try:
+        db.table("extrator_settings").upsert({"key": "ml_leaf_categories", "value": value}).execute()
+    except Exception:
+        logger.exception("Falha ao salvar cache de categorias-folha.")
+    logger.info("Categorias-folha descobertas: %s (nós consultados: %s).", len(leaves), len(visited))
+    return leaves
 
 def normalize_item(item: dict) -> dict | None:
     """Converte um anúncio real da API para o formato interno do Extrator."""
