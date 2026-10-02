@@ -59,10 +59,12 @@ async def api_get(path: str, params: dict | None = None):
         if response.status_code == 429:
             raise RuntimeError("Mercado Livre limitou as requisições (HTTP 429); a coleta será retomada no próximo ciclo.")
         if response.status_code >= 400:
-            # Preserve the provider's diagnostic message, but never log credentials.
+            # Ausência de ranking é esperada para várias categorias; não é falha de autenticação.
             body = response.text[:800]
-            import logging
-            logging.getLogger(__name__).error(
+            if response.status_code == 404 and "/highlights/" in path:
+                logger.debug("Ranking indisponível: %s (HTTP 404)", path)
+                raise RuntimeError(f"Mercado Livre API HTTP 404 em {path}: {body[:400]}")
+            logger.error(
                 "Mercado Livre API rejeitou %s: HTTP %s; resposta=%s",
                 path, response.status_code, body
             )
@@ -199,11 +201,11 @@ async def search_category(category_id: str) -> list[dict]:
                 logger.debug("Produto de catálogo %s sem anúncio vencedor.", entity_id)
                 continue
         elif entity_type == "USER_PRODUCT" or entity_id.startswith("MLBU"):
-            try:
-                candidate_ids.extend(await get_user_product_items(entity_id))
-            except Exception as exc:
-                logger.info("Não foi possível resolver User Product %s: %s", entity_id, str(exc)[:160])
-                continue
+            logger.debug(
+                "User Product %s ignorado: acesso não disponível para a aplicação.",
+                entity_id
+            )
+            continue
         elif entity_type == "ITEM":
             candidate_ids.append(entity_id)
         else:
