@@ -11,6 +11,13 @@ log = logging.getLogger(__name__)
 def is_admin(user_id: int | None) -> bool:
     return user_id is not None and user_id in config.TELEGRAM_ADMIN_IDS
 
+def is_confirmed_national_shopee(product: dict) -> bool:
+    if str(product.get("site_id") or "").upper() != "SHOPEE":
+        return True
+    metadata = product.get("metadata") or {}
+    return metadata.get("shipping_origin_filter") == "national_confirmed"
+
+
 async def send_pending_products(app: Application, limit: int = 10) -> int:
     if not config.telegram_ready() or not config.supabase_ready():
         return 0
@@ -25,7 +32,9 @@ async def send_pending_products(app: Application, limit: int = 10) -> int:
             InlineKeyboardButton("❌ Reprovar", callback_data=f"reject:{p['id']}"),
         ]])
         try:
-            if p.get("thumbnail"):
+            if is_shopee:
+                msg = await app.bot.send_message(chat_id=admin_chat_id, text=caption, reply_markup=keyboard, disable_web_page_preview=True)
+            elif p.get("thumbnail"):
                 msg = await app.bot.send_photo(chat_id=admin_chat_id, photo=p["thumbnail"], caption=caption, parse_mode="HTML", reply_markup=keyboard)
             else:
                 msg = await app.bot.send_message(chat_id=admin_chat_id, text=caption, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=False)
@@ -58,6 +67,9 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.answer("Este produto já foi decidido ou não está disponível.", show_alert=True)
         return
     product = rows[0]
+    if not is_confirmed_national_shopee(product):
+        await query.answer("Bloqueado: o envio nacional deste produto não foi confirmado.", show_alert=True)
+        return
     new_status = "approved" if action == "approve" else "rejected"
     changed = db.table("extrator_products").update({
         "status": new_status, "reviewed_by": user.id, "reviewed_at": datetime.now(timezone.utc).isoformat()
