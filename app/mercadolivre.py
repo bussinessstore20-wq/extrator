@@ -196,45 +196,141 @@ async def public_page_fallback(item_id: str) -> dict | None:
 
 
 
-async def public_category_fallback(category_id: str, limit: int) -> list[dict]:
-    """Busca IDs de anúncios na página pública da categoria como último recurso."""
-    import re
+class _ListingParser(HTMLParser):
+    """Lê cartões de produtos da listagem pública sem depender da página de detalhe."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.items = []
+        self.current = None
+        self.capture_title = False
+        self.capture_depth = 0
 
-    url = "https://lista.mercadolivre.com.br/_Desde_1_NoIndex_True"
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = attrs.get("class", "")
+        href = attrs.get("href", "")
+        if tag == "a" and href and ("MLB-" in href or "MLB" in href) and (
+            "poly-component__title" in classes or "ui-search-link" in classes or "poly-card" in classes
+        ):
+            self.current = {
+                "id": "",
+                "title": (attrs.get("title") or attrs.get("aria-label") or "").strip(),
+                "permalink": href.split("#", 1)[0],
+                "thumbnail": None,
+                "price": None,
+                "currency_id": "BRL",
+            }
+            import re
+            match = re.search(r"MLB-?([0-9]{6,})", href)
+            if match:
+                self.current["id"] = "MLB" + match.group(1)
+            self.capture_title = True
+            self.capture_depth = 1
+            return
+        if self.current is not None:
+            if tag == "a":
+                self.capture_depth += 1
+            if tag == "img" and not self.current.get("thumbnail"):
+                self.current["thumbnail"] = attrs.get("data-src") or attrs.get("src")
+            if tag == "meta" and attrs.get("itemprop") == "price":
+                try:
+                    self.current["price"] = float(attrs.get("content", ""))
+                except (TypeError, ValueError):
+                    pass
+
+    def handle_data(self, data):
+        if self.current is not None and self.capture_title:
+            value = data.strip()
+            if value and not self.current["title"]:
+                self.current["title"] = value
+
+    def handle_endtag(self, tag):
+        if self.current is None:
+            return
+        if tag == "a":
+            self.capture_depth -= 1
+            if self.capture_depth <= 0:
+                item = self.current
+                if item.get("id") and item.get("title") and item.get("permalink"):
+                    self.items.append(item)
+                self.current = None
+                self.capture_title = False
+                self.capture_depth = 0
+
+
+async def public_category_fallback(category_id: str, limit: int) -> list[dict]:
+    """Extrai dados diretamente dos cartões públicos da listagem, sem visitar cada anúncio."""
+    import re
+    urls = [
+        ("https://lista.mercadolivre.com.br/_Desde_1_NoIndex_True", {"category": category_id}),
+        (f"https://lista.mercadolivre.com.br/categoria/{category_id}", None),
+    ]
     headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
     }
-    try:
-        async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as client:
-            response = await client.get(url, params={"category": category_id})
-        if response.status_code >= 400:
-            logger.warning("Busca pública da categoria %s respondeu HTTP %s.", category_id, response.status_code)
-            return []
-        html = response.text[:5_000_000]
-        ids: list[str] = []
-        for pattern in (r'(?<![A-Z0-9])MLB-([0-9]{6,})(?![0-9])', r'(?<![A-Z0-9])MLB([0-9]{6,})(?![0-9])'):
-            for match in re.finditer(pattern, html):
-                item_id = "MLB" + match.group(1)
-                if item_id not in ids:
-                    ids.append(item_id)
-                if len(ids) >= limit * 3:
+    seen = set()
+    recovered = []
+    async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers=headers) as client:
+        for url, params in urls:
+            try:
+                response = await client.get(url, params=params)
+                logger.info("Listagem pública categoria %s respondeu HTTP %s (%s bytes; URL final %s)",
+                            category_id, response.status_code, len(response.text), str(response.url)[:180])
+                if response.status_code >= 400:
+                    continue
+                html = response.text[:5_000_000]
+                parser = _ListingParser()
+                parser.feed(html)
+                # Fallback secundário: alguns layouts incluem JSON-LD com produtos.
+                for script in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.I | re.S):
+                    try:
+                        import json
+                        data = json.loads(unescape(script))
+                        nodes = data if isinstance(data, list) else [data]
+                        for node in nodes:
+                            if isinstance(node, dict) and isinstance(node.get("itemListElement"), list):
+                                for entry in node["itemListElement"]:
+                                    product = entry.get("item", {}) if isinstance(entry, dict) else {}
+                                    if not isinstance(product, dict):
+                                        continue
+                                    link = product.get("url", "")
+                                    match = re.search(r"MLB-?([0-9]{6,})", link)
+                                    item_id = "MLB" + match.group(1) if match else ""
+                                    title = str(product.get("name") or "").strip()
+                                    if item_id and title and link:
+                                        parser.items.append({
+                                            "id": item_id, "title": title, "permalink": link,
+                                            "thumbnail": product.get("image"),
+                                            "price": None, "currency_id": "BRL",
+                                        })
+                    except Exception:
+                        continue
+                for item in parser.items:
+                    item_id = item.get("id")
+                    title = unescape(str(item.get("title") or "")).strip()
+                    link = str(item.get("permalink") or "").strip()
+                    if not item_id or item_id in seen or not title or not link:
+                        continue
+                    if link.startswith("/"):
+                        link = "https://www.mercadolivre.com.br" + link
+                    if not link.startswith("https://"):
+                        continue
+                    seen.add(item_id)
+                    item["title"] = title[:500]
+                    item["permalink"] = link
+                    recovered.append(item)
+                    if len(recovered) >= limit:
+                        break
+                if len(recovered) >= limit:
                     break
-            if len(ids) >= limit * 3:
-                break
-        recovered = []
-        for item_id in ids:
-            item = await public_page_fallback(item_id)
-            if item:
-                recovered.append(item)
-            if len(recovered) >= limit:
-                break
-        logger.info("Fallback público da categoria %s: IDs encontrados=%s, produtos recuperados=%s", category_id, len(ids), len(recovered))
-        return recovered
-    except Exception as exc:
-        logger.warning("Fallback de página pública da categoria %s falhou: %s", category_id, str(exc)[:180])
-        return []
+            except Exception as exc:
+                logger.warning("Fallback público da categoria %s falhou: %s", category_id, str(exc)[:180])
+    logger.info("Fallback público da categoria %s: produtos extraídos diretamente da listagem=%s",
+                category_id, len(recovered))
+    return recovered[:limit]
 
 def normalize_item(item: dict) -> dict | None:
     """Converte um anúncio real da API para o formato interno do Extrator."""
