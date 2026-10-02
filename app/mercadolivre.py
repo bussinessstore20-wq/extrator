@@ -79,29 +79,58 @@ async def get_categories() -> list[dict]:
     return await api_get(f"/sites/{config.ML_SITE_ID}/categories")
 
 async def search_category(category_id: str) -> list[dict]:
-    # A busca genérica /sites/{site}/search está retornando 403 mesmo com
-    # OAuth válido. Como alternativa documentada, consulta os destaques
-    # de mais vendidos da categoria e hidrata os IDs com detalhes de item.
+    # A busca genérica /sites/{site}/search está bloqueada para este aplicativo.
+    # Os destaques documentam três tipos distintos: ITEM, PRODUCT e USER_PRODUCT.
+    # Não tratar IDs desses tipos como se fossem todos IDs de /items.
     limit = max(1, min(config.COLLECTOR_MAX_ITEMS_PER_CATEGORY, 20))
     data = await api_get(f"/highlights/{config.ML_SITE_ID}/category/{category_id}")
     content = data.get("content", []) if isinstance(data, dict) else []
     items: list[dict] = []
+
     for entry in content[:limit]:
         if not isinstance(entry, dict):
             continue
-        item_id = str(entry.get("id") or "").strip()
-        # Some highlight responses already contain item fields.
-        if entry.get("permalink") and entry.get("title"):
-            items.append(entry)
+        entity_id = str(entry.get("id") or "").strip()
+        entity_type = str(entry.get("type") or "").upper()
+        if not entity_id:
             continue
-        if not item_id:
+
+        if entity_type == "PRODUCT":
+            # Produto de catálogo: consulta seu recurso próprio, não /items/{product_id}.
+            try:
+                product = await api_get(f"/products/{entity_id}")
+            except Exception as exc:
+                logger.warning("Falha ao consultar produto de catálogo %s: %s", entity_id, str(exc)[:180])
+                continue
+            if not isinstance(product, dict):
+                continue
+            winner = product.get("buy_box_winner")
+            if not isinstance(winner, dict):
+                logger.info("Produto de catálogo %s sem buy_box_winner; ignorado.", entity_id)
+                continue
+            item_id = str(winner.get("item_id") or "").strip()
+            title = str(product.get("name") or product.get("family_name") or "").strip()
+            permalink = str(product.get("permalink") or "").strip()
+            pictures = product.get("pictures") or []
+            thumbnail = pictures[0].get("url") if pictures and isinstance(pictures[0], dict) else None
+            if item_id and title and permalink:
+                items.append({
+                    "id": item_id,
+                    "title": title,
+                    "price": winner.get("price"),
+                    "currency_id": winner.get("currency_id") or "BRL",
+                    "thumbnail": thumbnail,
+                    "permalink": permalink,
+                    "condition": winner.get("condition"),
+                    "available_quantity": winner.get("available_quantity"),
+                    "official_store_id": winner.get("official_store_id"),
+                })
             continue
-        try:
-            item = await api_get(f"/items/{item_id}")
-            if isinstance(item, dict):
-                items.append(item)
-        except Exception as exc:
-            logger.warning("Não foi possível obter detalhes do destaque %s: %s", item_id, str(exc)[:200])
+
+        # IDs ITEM e USER_PRODUCT não são intercambiáveis com product IDs.
+        # A consulta a /items/{id} já retorna 403/404 neste aplicativo.
+        logger.info("Destaque ignorado: type=%s id=%s; não é seguro consultar como item genérico.", entity_type or "desconhecido", entity_id)
+
     return items
 
 def persist_product(item: dict, category_id: str) -> bool:
