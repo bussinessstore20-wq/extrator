@@ -54,6 +54,28 @@ def _normalise_origin(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().lower()
 
 
+def has_international_import_notice(page_html: str) -> bool:
+    """Detect Shopee's explicit international import-tax notice in public HTML."""
+    decoded = html.unescape(page_html or "")
+    decoded = decoded.replace("\\u00e7", "ç").replace("\\u00e3", "ã")
+    decoded = re.sub(r"<[^>]+>", " ", decoded)
+    normalized = _normalise_origin(decoded)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return bool(re.search(
+        r"produto internacional objeto de declaracao de importacao "
+        r"e sujeito a impostos estaduais e federais",
+        normalized,
+    ))
+
+
+def inspect_product_page(page_html: str) -> dict:
+    """Read both the import-tax warning and the displayed dispatch location."""
+    return {
+        "origin": extract_shipping_origin(page_html),
+        "international": has_international_import_notice(page_html),
+    }
+
+
 def extract_shipping_origin(page_html: str) -> str | None:
     """Read the public product-page 'Enviado de' label; no guessed origin."""
     decoded = html.unescape(page_html or "")
@@ -82,6 +104,8 @@ def extract_shipping_origin(page_html: str) -> str | None:
 def classify_shipping_origin(product: dict) -> tuple[bool, str]:
     """Only classify a product when its public detail page exposes a Brazilian origin."""
     metadata = product.get("metadata") or {}
+    if metadata.get("shipping_is_international") is True:
+        return False, "international"
     origin = str(metadata.get("shipping_origin_page") or "").strip()
     normalized = _normalise_origin(origin)
     if not normalized:
@@ -98,13 +122,13 @@ def classify_shipping_origin(product: dict) -> tuple[bool, str]:
     return False, "origin_unknown"
 
 
-async def fetch_shipping_origin(item: dict, semaphore: asyncio.Semaphore) -> str | None:
-    """Check Shopee's public product detail page for its displayed dispatch location."""
+async def fetch_shipping_origin(item: dict, semaphore: asyncio.Semaphore) -> dict:
+    """Check the public page for an import notice and dispatch location."""
     metadata = item.get("metadata") or {}
     product_url = str(metadata.get("product_link") or "").strip()
     parsed = urlparse(product_url)
     if parsed.scheme != "https" or parsed.hostname not in {"shopee.com.br", "www.shopee.com.br"}:
-        return None
+        return {"origin": None, "international": False}
     async with semaphore:
         try:
             async with httpx.AsyncClient(
@@ -115,11 +139,11 @@ async def fetch_shipping_origin(item: dict, semaphore: asyncio.Semaphore) -> str
                 response = await client.get(product_url)
             final_host = urlparse(str(response.url)).hostname
             if response.status_code >= 400 or final_host not in {"shopee.com.br", "www.shopee.com.br"}:
-                return None
-            return extract_shipping_origin(response.text)
+                return {"origin": None, "international": False}
+            return inspect_product_page(response.text)
         except (httpx.HTTPError, ValueError) as exc:
             logger.info("Não foi possível confirmar origem no anúncio Shopee: %s", type(exc).__name__)
-            return None
+            return {"origin": None, "international": False}
 CATEGORIES = [
     {"id": "shopee_ofertas", "name": "Ofertas", "keyword": "ofertas"},
     {"id": "shopee_eletronicos", "name": "Eletrônicos", "keyword": "eletronicos"},
@@ -304,6 +328,7 @@ async def collect_once() -> dict:
     category_errors = []
     origin_checks = 0
     origin_values_found = 0
+    international_notices_found = 0
     origin_check_limit = 50
     origin_semaphore = asyncio.Semaphore(10)
     for category in selected:
@@ -318,10 +343,16 @@ async def collect_once() -> dict:
                 return_exceptions=True,
             )
             origin_checks += len(candidates)
-            for item, page_origin in zip(candidates, origins):
-                if isinstance(page_origin, str) and page_origin:
-                    origin_values_found += 1
-                    item.setdefault("metadata", {})["shipping_origin_page"] = page_origin
+            for item, page_result in zip(candidates, origins):
+                if isinstance(page_result, dict):
+                    page_origin = page_result.get("origin")
+                    is_international = page_result.get("international") is True
+                    item.setdefault("metadata", {})["shipping_is_international"] = is_international
+                    if is_international:
+                        international_notices_found += 1
+                    if isinstance(page_origin, str) and page_origin:
+                        origin_values_found += 1
+                        item.setdefault("metadata", {})["shipping_origin_page"] = page_origin
                 accepted, origin_status = classify_shipping_origin(item)
                 item.setdefault("metadata", {})["shipping_origin_filter"] = origin_status
                 if not accepted:
@@ -367,6 +398,7 @@ async def collect_once() -> dict:
         "excluded_unknown_origin": excluded_unknown_origin,
         "product_pages_checked": origin_checks,
         "origin_values_found": origin_values_found,
+        "international_notices_found": international_notices_found,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
     }
@@ -387,6 +419,8 @@ async def collect_once() -> dict:
         "excluded_international": excluded_international,
         "excluded_unknown_origin": excluded_unknown_origin,
         "product_pages_checked": origin_checks,
+        "origin_values_found": origin_values_found,
+        "international_notices_found": international_notices_found,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "shipping_filter": "national_only_fail_closed",
