@@ -1,7 +1,8 @@
-"""Shopee Affiliate Open API collector (official GraphQL API only).
+"""Shopee Affiliate Open API collector with public product-page origin verification.
 
-Automatic collection is opt-in and disabled by default. This module never scrapes
-Shopee pages or attempts to bypass access controls.
+Automatic collection is opt-in and disabled by default. Product detail pages are
+read only to inspect the visible "Enviado de" location; no login or access-control
+bypass is attempted.
 """
 import asyncio
 import hashlib
@@ -107,7 +108,7 @@ async def fetch_shipping_origin(item: dict, semaphore: asyncio.Semaphore) -> str
     async with semaphore:
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(5.0, connect=3.0),
+                timeout=httpx.Timeout(4.0, connect=2.0),
                 follow_redirects=True,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; Extrator/1.0; +https://shopee.com.br)"},
             ) as client:
@@ -302,8 +303,8 @@ async def collect_once() -> dict:
     accepted_national = excluded_international = excluded_unknown_origin = 0
     category_errors = []
     origin_checks = 0
-    origin_check_limit = 30
-    origin_semaphore = asyncio.Semaphore(8)
+    origin_check_limit = 50
+    origin_semaphore = asyncio.Semaphore(10)
     for category in selected:
         if new_items >= max_new_products or origin_checks >= origin_check_limit:
             break
@@ -363,6 +364,7 @@ async def collect_once() -> dict:
         "excluded_international": excluded_international,
         "excluded_unknown_origin": excluded_unknown_origin,
         "product_pages_checked": origin_checks,
+        "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
     }
     db.table("extrator_collection_runs").update({
@@ -382,6 +384,7 @@ async def collect_once() -> dict:
         "excluded_international": excluded_international,
         "excluded_unknown_origin": excluded_unknown_origin,
         "product_pages_checked": origin_checks,
+        "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "shipping_filter": "national_only_fail_closed",
         "max_new_products": max_new_products,
@@ -390,7 +393,7 @@ async def collect_once() -> dict:
         "errors": errors,
         "category_errors": category_errors[:5],
         "warning": (
-            "A API oficial não retornou dados de origem de envio; nenhum produto de origem desconhecida será enviado."
+            "A página pública dos anúncios não confirmou a origem nacional nos produtos verificados; nenhum produto de origem desconhecida será enviado."
             if excluded_unknown_origin and accepted_national == 0 else None
         ),
     }
