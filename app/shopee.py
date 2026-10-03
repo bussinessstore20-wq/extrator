@@ -55,17 +55,28 @@ def _normalise_origin(value: str) -> str:
 
 
 def has_international_import_notice(page_html: str) -> bool:
-    """Detect Shopee's explicit international import-tax notice in public HTML."""
+    """Detect an import warning in visible product-page text, not scripts/templates."""
     decoded = html.unescape(page_html or "")
     decoded = decoded.replace("\\u00e7", "ç").replace("\\u00e3", "ã")
+    # The HTML may contain generic notices inside scripts, hydration JSON, or templates.
+    # Those can make every product look international; only inspect rendered page text.
+    decoded = re.sub(
+        r"<(script|style|noscript|template|svg)\\b[^>]*>.*?</\\1\\s*>",
+        " ",
+        decoded,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    decoded = re.sub(r"<!--.*?-->", " ", decoded, flags=re.DOTALL)
     decoded = re.sub(r"<[^>]+>", " ", decoded)
     normalized = _normalise_origin(decoded)
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
-    return bool(re.search(
+    tax_notice = bool(re.search(
         r"produto internacional objeto de declaracao de importacao "
         r"e sujeito a impostos estaduais e federais",
         normalized,
     ))
+    exterior_label = bool(re.search(r"\\benvio do exterior\\b", normalized))
+    return tax_notice or exterior_label
 
 
 def inspect_product_page(page_html: str) -> dict:
@@ -229,9 +240,8 @@ async def fetch_shipping_origin(item: dict, semaphore: asyncio.Semaphore) -> dic
                         detail = await client.get(detail_url)
                         if detail.status_code < 400:
                             payload = detail.json()
-                            serialized = json.dumps(payload, ensure_ascii=False)
-                            if has_international_import_notice(serialized):
-                                page_result["international"] = True
+                            # Do not classify by scanning the entire JSON response for a warning:
+                            # generic/help text in payloads is not reliable product-level evidence.
                             if not page_result["origin"]:
                                 page_result["origin"] = extract_structured_shipping_origin(payload)
                     except (httpx.HTTPError, ValueError):
