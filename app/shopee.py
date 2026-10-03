@@ -122,28 +122,105 @@ def classify_shipping_origin(product: dict) -> tuple[bool, str]:
     return False, "origin_unknown"
 
 
+def extract_structured_shipping_origin(payload: dict) -> str | None:
+    """Read explicit shipping-origin fields from Shopee's structured product response."""
+    found = []
+
+    def walk(value, key=""):
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                walk(child_value, str(child_key).lower())
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, key)
+        elif isinstance(value, str):
+            key_normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+            # Do not use shop_location: seller address is not proof of dispatch origin.
+            allowed = (
+                "shipping_from", "shipping_origin", "ship_from",
+                "origin_location", "dispatch_origin", "warehouse_location",
+                "shipping_address_label",
+            )
+            if any(token in key_normalized for token in allowed):
+                value = value.strip()
+                if value and len(value) <= 100:
+                    found.append(value)
+            match = re.search(
+                r"(?:Enviado\\s+de|Shipping\\s+from)\\s*:?\\s*"
+                r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .,'-]{1,55})",
+                value,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                found.append(match.group(1).strip())
+
+    walk(payload)
+    for origin in found:
+        normalized = _normalise_origin(origin)
+        if any(_normalise_origin(city) in normalized for city in BRAZILIAN_CITIES) or any(
+            re.search(r"\\b" + re.escape(_normalise_origin(state)) + r"\\b", normalized)
+            for state in BRAZILIAN_STATES
+        ):
+            return origin
+        if any(_normalise_origin(country) in normalized for country in FOREIGN_ORIGINS):
+            return origin
+    return found[0] if found else None
+
+
 async def fetch_shipping_origin(item: dict, semaphore: asyncio.Semaphore) -> dict:
-    """Check the public page for an import notice and dispatch location."""
+    """Check the product page and Shopee's public product-detail JSON endpoint."""
     metadata = item.get("metadata") or {}
     product_url = str(metadata.get("product_link") or "").strip()
     parsed = urlparse(product_url)
     if parsed.scheme != "https" or parsed.hostname not in {"shopee.com.br", "www.shopee.com.br"}:
         return {"origin": None, "international": False}
+
+    shop_id = str(metadata.get("shop_id") or "").strip()
+    item_id = str(metadata.get("item_id") or "").strip()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/json",
+        "Referer": "https://shopee.com.br/",
+        "X-Requested-With": "XMLHttpRequest",
+    }
     async with semaphore:
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(4.0, connect=2.0),
+                timeout=httpx.Timeout(8.0, connect=3.0),
                 follow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; Extrator/1.0; +https://shopee.com.br)"},
+                headers=headers,
             ) as client:
                 response = await client.get(product_url)
-            final_host = urlparse(str(response.url)).hostname
-            if response.status_code >= 400 or final_host not in {"shopee.com.br", "www.shopee.com.br"}:
-                return {"origin": None, "international": False}
-            return inspect_product_page(response.text)
+                final_host = urlparse(str(response.url)).hostname
+                page_result = {"origin": None, "international": False}
+                if response.status_code < 400 and final_host in {"shopee.com.br", "www.shopee.com.br"}:
+                    page_result = inspect_product_page(response.text)
+
+                # Shopee renders parts of the product page dynamically. If the HTML
+                # did not expose the notice/origin, query its public product-detail JSON.
+                if shop_id.isdigit() and item_id.isdigit() and (
+                    not page_result["origin"] or not page_result["international"]
+                ):
+                    detail_url = (
+                        "https://shopee.com.br/api/v4/pdp/get_pc"
+                        f"?shop_id={shop_id}&item_id={item_id}&tz_offset_minutes=-180&detail_level=0"
+                    )
+                    try:
+                        detail = await client.get(detail_url)
+                        if detail.status_code < 400:
+                            payload = detail.json()
+                            serialized = json.dumps(payload, ensure_ascii=False)
+                            if has_international_import_notice(serialized):
+                                page_result["international"] = True
+                            if not page_result["origin"]:
+                                page_result["origin"] = extract_structured_shipping_origin(payload)
+                    except (httpx.HTTPError, ValueError):
+                        logger.info("Endpoint estruturado de produto Shopee indisponível para item %s", item_id)
+                return page_result
         except (httpx.HTTPError, ValueError) as exc:
             logger.info("Não foi possível confirmar origem no anúncio Shopee: %s", type(exc).__name__)
             return {"origin": None, "international": False}
+
 CATEGORIES = [
     {"id": "shopee_ofertas", "name": "Ofertas", "keyword": "ofertas"},
     {"id": "shopee_eletronicos", "name": "Eletrônicos", "keyword": "eletronicos"},
