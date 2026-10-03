@@ -106,6 +106,26 @@ def classify_shipping_origin(product: dict) -> tuple[bool, str]:
     metadata = product.get("metadata") or {}
     if metadata.get("shipping_is_international") is True:
         return False, "international"
+
+    # The affiliate offer includes shopType values such as SHOPEE_MALL_CB /
+    # C2C_CB and their *_NON_CB counterparts. Use only explicit typed values;
+    # never infer origin from the seller's shop address or missing fields.
+    raw_shop_type = metadata.get("shop_type")
+    if isinstance(raw_shop_type, str):
+        shop_types = [raw_shop_type.upper()]
+    elif isinstance(raw_shop_type, (list, tuple)):
+        shop_types = [str(value).upper() for value in raw_shop_type]
+    else:
+        shop_types = []
+    shop_types = [value.strip() for value in shop_types if value and str(value).strip()]
+    if shop_types:
+        has_cb = any(value.endswith("_CB") and not value.endswith("_NON_CB") for value in shop_types)
+        has_non_cb = any(value.endswith("_NON_CB") for value in shop_types)
+        if has_cb:
+            return False, "international"
+        if has_non_cb:
+            return True, "national_confirmed_offer_type"
+
     origin = str(metadata.get("shipping_origin_page") or "").strip()
     normalized = _normalise_origin(origin)
     if not normalized:
