@@ -1,4 +1,4 @@
-"""Shopee Affiliate Open API collector with public product-page origin verification.
+"""Shopee Affiliate Open API collector with public product-page origin verification and import-notice filtering.
 
 Automatic collection is opt-in and disabled by default. Product detail pages are
 read only to inspect the visible "Enviado de" location; no login or access-control
