@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 def classify_shipping_origin(product: dict) -> tuple[bool, str]:
-    """Accept only explicitly local products; unknown origin fails closed."""
+    """Accept only explicitly local products; productOfferV2 has no documented origin field.
+
+    The current query deliberately does not request undocumented shipping fields.
+    Until a trustworthy source confirms Brazilian dispatch, origin remains unknown.
+    """
     metadata = product.get("metadata") or {}
     def norm(value):
         try:
@@ -34,7 +38,6 @@ def classify_shipping_origin(product: dict) -> tuple[bool, str]:
     if icon_type == 0 or cross_border == 0:
         return True, "national_confirmed"
     return False, "origin_unknown"
-
 CATEGORIES = [
     {"id": "shopee_ofertas", "name": "Ofertas", "keyword": "ofertas"},
     {"id": "shopee_eletronicos", "name": "Eletrônicos", "keyword": "eletronicos"},
