@@ -337,4 +337,158 @@ async def run_shopee_collection(x_admin_secret: str | None = Header(default=None
 
 @app.get('/admin/collector', response_class=HTMLResponse)
 async def collector_dashboard():
-    return HTMLResponse("<!doctype html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Extrator | Coleta</title><style>\nbody{margin:0;background:#0b1020;color:#edf2ff;font:16px system-ui,sans-serif}main{max-width:760px;margin:auto;padding:24px 16px}.card{background:#141c31;border:1px solid #2b3652;border-radius:16px;padding:22px;margin:16px 0}p{color:#aab5d0;line-height:1.5}input,button{width:100%;box-sizing:border-box;padding:14px;border-radius:10px;font-size:16px;margin-top:10px}input{background:#0b1224;border:1px solid #3a4767;color:white}button{border:0;background:#8068ff;color:white;font-weight:700;cursor:pointer}button:disabled{opacity:.6}.result{white-space:pre-wrap;background:#0b1224;padding:14px;border-radius:10px;margin-top:14px;min-height:44px}.stats{display:flex;gap:10px;flex-wrap:wrap}.stats div{background:#0b1224;padding:12px;border-radius:10px;flex:1;min-width:120px}small{color:#aab5d0}</style></head><body><main><h1>🦊 Extrator</h1><p>Central de coleta · Mercado Livre</p><section class=\"card\"><h2>Executar coleta manual</h2><p>Faça uma coleta sem ativar a rotina automática. Os novos produtos serão salvos como pendentes de aprovação e enviados ao Telegram quando o bot estiver conectado.</p><label for=\"secret\">Chave administrativa (ADMIN_API_SECRET)</label><input id=\"secret\" type=\"password\" autocomplete=\"current-password\" placeholder=\"Chave configurada no Render\"><button id=\"run\">▶ Executar coleta agora</button><button id=\"runShopee\">▶ Testar coleta Shopee agora</button><button id=\"pauseButton\" style=\"background:#b45309\">⏸ Pausar Shopee</button><div id=\"result\" class=\"result\" role=\"status\">Pronto para executar.</div></section><section class=\"card\"><h2>Status do serviço</h2><div class=\"stats\"><div><b id=\"db\">—</b><br><small>Supabase</small></div><div><b id=\"ml\">—</b><br><small>App Mercado Livre</small></div><div><b id=\"auto\">—</b><br><small>Coleta automática</small></div><div><b id=\"pauseState\">—</b><br><small>Estado da Shopee</small></div></div><button id=\"refresh\" style=\"background:#263451\">↻ Atualizar status</button><p><a href=\"/status\" style=\"color:#c8bcff\">Abrir status técnico</a></p></section><section class=\"card\"><h2>🛍️ Coleta Shopee</h2><p>Busca até 5 links novos por ciclo, a cada 10 minutos. Só aceita envio nacional explicitamente confirmado; origem desconhecida é bloqueada. A execução manual não liga a rotina automática.</p><div class=\"stats\"><div><b id=\"shopee\">—</b><br><small>API Shopee</small></div><div><b id=\"shopeeauto\">Desligada</b><br><small>Coleta automática</small></div></div><div id=\"shopeeResult\" class=\"result\" role=\"status\">Aguardando teste manual.</div></section></main><script>\nconst el=id=>document.getElementById(id);\nasync function refresh(){try{const r=await fetch('/status',{cache:'no-store'});const s=await r.json();el('db').textContent=s.supabase_connection==='ok'?'Conectado':s.supabase_connection;el('ml').textContent=s.mercadolivre_app_configured?'Configurado':'Não configurado';el('auto').textContent=s.collector_enabled?'Ligada':'Desligada';el('pauseState').textContent=s.shopee_collector_paused?'Pausada':(s.shopee_collector_enabled?'Ativa':'Desligada');el('pauseButton').textContent=s.shopee_collector_paused?'▶ Retomar Shopee':'⏸ Pausar Shopee';el('pauseButton').style.background=s.shopee_collector_paused?'#15803d':'#b45309';el('shopee').textContent=s.shopee_app_configured?'Configurada':'Não configurada';el('shopeeauto').textContent=s.shopee_collector_enabled?'Ligada':'Desligada'}catch(e){el('result').textContent='Não foi possível consultar o status.'}}\nel('refresh').addEventListener('click',refresh);\nel('pauseButton').addEventListener('click',async()=>{const secret=el('secret').value.trim();if(!secret){el('result').textContent='Informe ADMIN_API_SECRET antes de pausar ou retomar.';return}const b=el('pauseButton');const pausing=!b.textContent.includes('Retomar');b.disabled=true;b.textContent=pausing?'Pausando…':'Retomando…';try{const r=await fetch(pausing?'/admin/shopee/collector/pause':'/admin/shopee/collector/resume',{method:'POST',headers:{'X-Admin-Secret':secret}});const d=await r.json();if(!r.ok){el('result').textContent=d.detail||'Não foi possível alterar o estado da coleta.'}else{el('result').textContent=d.message||'Estado da coleta atualizado.';await refresh()}}catch(e){el('result').textContent='Falha de comunicação ao alterar a coleta.'}finally{b.disabled=false;await refresh()}});\nel('run').addEventListener('click',async()=>{const secret=el('secret').value.trim();if(!secret){el('result').textContent='Informe ADMIN_API_SECRET, configurada nas variáveis do Render.';return}const b=el('run');b.disabled=true;b.textContent='Coletando…';el('result').textContent='Consultando o Mercado Livre. Aguarde…';try{const r=await fetch('/admin/collector/run',{method:'POST',headers:{'X-Admin-Secret':secret}});const d=await r.json();if(!r.ok){el('result').textContent=r.status===403?'Acesso negado. Confira a chave administrativa no Render.':(d.detail||'A coleta falhou.')}else{el('result').textContent='Coleta concluída!\\n\\nCategorias consultadas: '+(d.categories_seen||0)+'\\nProdutos encontrados: '+(d.items_seen||0)+'\\nNovos produtos salvos: '+(d.new_items||0)+'\\nErros: '+(d.errors||0)+'\\n\\nVerifique o Telegram para aprovar os produtos.';await refresh()}}catch(e){el('result').textContent='Falha de comunicação. Confira /status e os logs do Render.'}finally{b.disabled=false;b.textContent='▶ Executar coleta agora'}});\nel('runShopee').addEventListener('click',async()=>{const secret=el('secret').value.trim();if(!secret){el('shopeeResult').textContent='Informe ADMIN_API_SECRET, configurada no Render.';return}const b=el('runShopee');b.disabled=true;b.textContent='Consultando Shopee…';el('shopeeResult').textContent='Consultando ofertas na API oficial. Aguarde…';try{const r=await fetch('/admin/shopee/collector/run',{method:'POST',headers:{'X-Admin-Secret':secret}});const d=await r.json();if(!r.ok){el('shopeeResult').textContent=d.detail||'A coleta Shopee falhou.'}else{el('shopeeResult').textContent='Teste Shopee concluído.\\n\\nCategorias consultadas: '+(d.categories_seen||0)+'\\nProdutos encontrados: '+(d.items_seen||0)+'\\nOrigem nacional confirmada: '+(d.accepted_national||0)+'\\nOrigem desconhecida excluída: '+(d.excluded_unknown_origin||0)+'\\nInternacionais excluídos: '+(d.excluded_international||0)+'\\nLinks novos salvos: '+(d.new_items||0)+'\\nErros: '+(d.errors||0)+'\\nIntervalo: '+Math.round((d.interval_seconds||600)/60)+' min\\nLimite por ciclo: '+(d.max_new_products||5)+'\\n'+(d.warning||'')+'\\nColeta automática: '+(d.automatic_collection_enabled?'ligada':'desligada');await refresh()}}catch(e){el('shopeeResult').textContent='Falha de comunicação. Confira /status e os logs do Render.'}finally{b.disabled=false;b.textContent='▶ Testar coleta Shopee agora'}});\nrefresh();\n</script></body></html>")
+    return HTMLResponse(r"""<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101827">
+<title>Extrator | Central de operações</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1120;--panel:#131d2f;--panel2:#0e1728;--line:#26364d;--text:#eef4ff;--muted:#9aaec8;--purple:#8b7cff;--green:#38c793;--amber:#f3b84b;--red:#fb7185}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top left,#172744 0,transparent 44%),var(--bg);color:var(--text);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{width:min(1080px,100%);margin:auto;padding:28px 18px 52px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:26px}.brand{display:flex;align-items:center;gap:14px}.logo{display:grid;place-items:center;width:50px;height:50px;border-radius:16px;background:linear-gradient(135deg,#8b7cff,#5d52cf);font-size:25px;box-shadow:0 8px 30px #6558d633}.eyebrow{margin:0;color:#a8a0ff;font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}.brand h1{font-size:25px;letter-spacing:-.04em;margin:2px 0 0}.top-actions{display:flex;gap:10px;align-items:center}.top-actions a{color:#c7d2fe;text-decoration:none;font-size:13px}.layout{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wide{grid-column:1/-1}.card{min-width:0;background:linear-gradient(180deg,#151f32,#111a2b);border:1px solid var(--line);border-radius:19px;padding:22px;box-shadow:0 12px 40px #00000012}.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.card h2{font-size:18px;letter-spacing:-.02em;margin:0 0 5px}.card h3{font-size:14px;margin:0}.sub{margin:0;color:var(--muted);font-size:13px;line-height:1.65}.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:#0d1626;color:#b8c8df;font-size:11px;font-weight:750;white-space:nowrap}.dot{width:7px;height:7px;border-radius:50%;background:#8393aa}.pill.good .dot{background:var(--green)}.pill.warn .dot{background:var(--amber)}.pill.bad .dot{background:var(--red)}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:18px}.metric{background:var(--panel2);border:1px solid #223149;border-radius:13px;padding:13px;min-width:0}.metric b{display:block;font-size:17px;letter-spacing:-.02em;overflow-wrap:anywhere}.metric span{display:block;color:var(--muted);font-size:11px;margin-top:3px}.operations{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}.operation{border:1px solid #2a3a53;border-radius:15px;padding:16px;background:#0e1728}.op-title{display:flex;align-items:center;gap:10px;margin-bottom:7px}.op-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:11px;background:#202c44;font-size:18px}.op-title h3{font-size:14px}.op-title small{display:block;color:var(--muted);font-size:11px;font-weight:500}.field-label{display:block;color:#c6d3e7;font-size:12px;font-weight:700;margin-top:18px}input{width:100%;margin-top:7px;padding:13px 14px;border:1px solid #34445f;border-radius:11px;background:#091221;color:#fff;font:inherit;outline:none}input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff22}.btn{display:inline-flex;justify-content:center;align-items:center;gap:8px;border:0;border-radius:11px;padding:12px 14px;font:inherit;font-weight:800;font-size:13px;cursor:pointer;transition:filter .15s,transform .15s;width:100%;margin-top:10px}.btn:hover{filter:brightness(1.08)}.btn:active{transform:translateY(1px)}.btn:disabled{opacity:.55;cursor:wait}.primary{background:var(--purple);color:white}.secondary{background:#263650;color:#e3edff}.orange{background:#8b5a15;color:#fff0d0}.green{background:#146b51;color:#d9fff1}.notice{margin-top:15px;padding:13px 14px;border-radius:12px;border:1px solid #6d552b;background:#382b16;color:#f6dca4;font-size:12px;line-height:1.6}.notice strong{display:block;margin-bottom:3px}.notice.info{border-color:#314c72;background:#14253d;color:#c8dcfa}.result{white-space:pre-wrap;overflow-wrap:anywhere;min-height:46px;margin-top:13px;padding:13px;border:1px solid #253650;border-radius:12px;background:#091221;color:#c7d6eb;font-size:12px;line-height:1.7}.result:empty{display:none}.divider{height:1px;background:#25344a;margin:18px 0}.section-label{color:#8399b7;font-size:10px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;margin:0 0 10px}.last-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.last-box{background:#0d1626;border:1px solid #223149;border-radius:13px;padding:14px;min-width:0}.last-box p{color:var(--muted);font-size:12px;margin:6px 0 0;overflow-wrap:anywhere}.footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:#7287a5;font-size:11px;padding:18px 3px}.footer a{color:#a9a0ff;text-decoration:none}
+@media(max-width:700px){main{padding:18px 12px 36px}.topbar{align-items:flex-start}.brand h1{font-size:21px}.top-actions{flex-direction:column;align-items:flex-end}.layout,.operations{grid-template-columns:1fr}.wide{grid-column:auto}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:17px}.last-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<header class="topbar">
+  <div class="brand"><div class="logo">🦊</div><div><p class="eyebrow">Central de operações</p><h1>Extrator</h1></div></div>
+  <div class="top-actions"><span id="overall" class="pill"><i class="dot"></i>Verificando serviço</span><a href="/status" target="_blank" rel="noopener">Status técnico ↗</a></div>
+</header>
+<div class="layout">
+  <section class="card wide">
+    <div class="card-head"><div><h2>Visão geral</h2><p class="sub">Acompanhe as conexões e execute testes manuais sem ligar as rotinas automáticas.</p></div><span id="dbPill" class="pill"><i class="dot"></i>Banco</span></div>
+    <div class="metrics">
+      <div class="metric"><b id="db">—</b><span>Conexão Supabase</span></div>
+      <div class="metric"><b id="ml">—</b><span>Credenciais Mercado Livre</span></div>
+      <div class="metric"><b id="shopee">—</b><span>Credenciais Shopee</span></div>
+      <div class="metric"><b id="updated">—</b><span>Última atualização</span></div>
+    </div>
+    <div class="divider"></div>
+    <p class="section-label">Rotinas automáticas</p>
+    <div class="metrics">
+      <div class="metric"><b id="auto">—</b><span>Mercado Livre</span></div>
+      <div class="metric"><b id="shopeeAuto">—</b><span>Shopee</span></div>
+      <div class="metric"><b id="pauseState">—</b><span>Controle Shopee</span></div>
+      <div class="metric"><b id="interval">10 min</b><span>Intervalo Shopee</span></div>
+    </div>
+  </section>
+  <section class="card wide">
+    <div class="card-head"><div><h2>Chave administrativa</h2><p class="sub">A chave é enviada ao servidor apenas ao executar uma ação. Ela não é salva pelo painel.</p></div><span class="pill"><i class="dot"></i>Acesso protegido</span></div>
+    <label class="field-label" for="secret">ADMIN_API_SECRET — configurada no Render</label>
+    <input id="secret" type="password" autocomplete="current-password" placeholder="Digite sua chave administrativa">
+  </section>
+  <section class="card">
+    <div class="card-head"><div><h2>Mercado Livre</h2><p class="sub">Executa uma busca manual usando a configuração existente. Não altera a rotina automática.</p></div><span class="pill"><i class="dot"></i>Manual</span></div>
+    <div class="operation" style="margin-top:16px">
+      <div class="op-title"><div class="op-icon">🛒</div><div><h3>Executar coleta</h3><small>Mercado Livre · configuração atual</small></div></div>
+      <p class="sub">Os produtos novos seguem para aprovação conforme o fluxo já configurado.</p>
+      <button id="run" class="btn primary">▶ Executar coleta Mercado Livre</button>
+    </div>
+    <div id="mlResult" class="result" role="status">Aguardando execução manual.</div>
+  </section>
+  <section class="card">
+    <div class="card-head"><div><h2>Shopee</h2><p class="sub">Teste independente com limite de 5 links novos por ciclo, em intervalos de 10 minutos.</p></div><span id="shopeePill" class="pill warn"><i class="dot"></i>Origem não confirmada</span></div>
+    <div class="operation" style="margin-top:16px">
+      <div class="op-title"><div class="op-icon">🛍️</div><div><h3>Testar coleta Shopee</h3><small>API oficial de afiliados</small></div></div>
+      <p class="sub">A coleta automática permanece desligada. O teste manual não a ativa.</p>
+      <button id="runShopee" class="btn primary">▶ Testar coleta Shopee</button>
+      <button id="pauseButton" class="btn orange">⏸ Pausar Shopee</button>
+    </div>
+    <div class="notice"><strong>Filtro de origem nacional ativo</strong>Produtos sem informação confiável de envio nacional são excluídos. Não serão enviados links de origem desconhecida.</div>
+    <div id="shopeeResult" class="result" role="status">Aguardando teste manual.</div>
+  </section>
+  <section class="card wide">
+    <div class="card-head"><div><h2>Últimos resultados</h2><p class="sub">Resumo da última execução disponível nesta instância do serviço.</p></div><button id="refresh" class="btn secondary" style="width:auto;margin:0">↻ Atualizar status</button></div>
+    <div class="last-grid">
+      <div class="last-box"><h3>Mercado Livre</h3><p id="lastMl">Nenhuma execução registrada nesta instância.</p></div>
+      <div class="last-box"><h3>Shopee</h3><p id="lastShopee">Nenhuma execução registrada nesta instância.</p></div>
+    </div>
+    <div id="result" class="result" role="status"></div>
+  </section>
+</div>
+<footer class="footer"><span>Extrator · Painel operacional</span><span>As coletas manuais não ativam tarefas automáticas.</span></footer>
+</main>
+<script>
+const el = id => document.getElementById(id);
+let statusData = null;
+function setPill(id, text, kind) {
+  const node = el(id); node.className = 'pill' + (kind ? ' ' + kind : ''); node.innerHTML = '<i class="dot"></i>' + text;
+}
+function describeRun(run, platform) {
+  if (!run) return 'Nenhuma execução registrada nesta instância.';
+  const parts = [];
+  parts.push('Produtos encontrados: ' + (run.items_seen ?? 0));
+  if (platform === 'shopee') {
+    parts.push('Origem nacional confirmada: ' + (run.accepted_national ?? 0));
+    parts.push('Origem desconhecida excluída: ' + (run.excluded_unknown_origin ?? 0));
+    parts.push('Links novos salvos: ' + (run.new_items ?? 0));
+  } else parts.push('Novos produtos salvos: ' + (run.new_items ?? 0));
+  parts.push('Erros: ' + (run.errors ?? 0));
+  return parts.join(' · ');
+}
+async function refresh() {
+  try {
+    const r = await fetch('/status', {cache:'no-store'});
+    const s = await r.json();
+    statusData = s;
+    el('db').textContent = s.supabase_connection === 'ok' ? 'Conectado' : (s.supabase_connection === 'error' ? 'Erro' : 'Não configurado');
+    el('ml').textContent = s.mercadolivre_app_configured ? 'Configurado' : 'Pendente';
+    el('shopee').textContent = s.shopee_app_configured ? 'Configurado' : 'Pendente';
+    el('auto').textContent = s.collector_enabled ? 'Ligada' : 'Desligada';
+    el('shopeeAuto').textContent = s.shopee_collector_enabled ? 'Ligada' : 'Desligada';
+    el('pauseState').textContent = s.shopee_collector_paused ? 'Pausada' : (s.shopee_collector_enabled ? 'Ativa' : 'Desligada');
+    el('interval').textContent = Math.round((s.shopee_collector_interval_seconds || 600) / 60) + ' min';
+    el('updated').textContent = new Date().toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+    setPill('overall', s.supabase_connection === 'ok' ? 'Serviço conectado' : 'Verificar conexão', s.supabase_connection === 'ok' ? 'good' : 'warn');
+    setPill('dbPill', s.supabase_connection === 'ok' ? 'Banco conectado' : 'Banco: ' + s.supabase_connection, s.supabase_connection === 'ok' ? 'good' : 'warn');
+    setPill('shopeePill', s.shopee_last_collection && s.shopee_last_collection.accepted_national > 0 ? 'Nacionais confirmados' : 'Origem não confirmada', s.shopee_last_collection && s.shopee_last_collection.accepted_national > 0 ? 'good' : 'warn');
+    el('pauseButton').textContent = s.shopee_collector_paused ? '▶ Retomar Shopee' : '⏸ Pausar Shopee';
+    el('pauseButton').className = 'btn ' + (s.shopee_collector_paused ? 'green' : 'orange');
+    el('lastMl').textContent = describeRun(s.last_collection, 'ml') + (s.last_error ? ' · Aviso: ' + s.last_error : '');
+    el('lastShopee').textContent = describeRun(s.shopee_last_collection, 'shopee') + (s.shopee_last_error ? ' · Aviso: ' + s.shopee_last_error : '');
+  } catch (e) {
+    setPill('overall', 'Falha ao consultar', 'bad');
+    el('result').textContent = 'Não foi possível consultar /status. Confira o serviço e tente novamente.';
+  }
+}
+async function postAction(url, buttonId, resultId, loadingText, render) {
+  const secret = el('secret').value.trim();
+  if (!secret) { el(resultId).textContent = 'Informe ADMIN_API_SECRET antes de executar esta ação.'; el('secret').focus(); return; }
+  const button = el(buttonId); const oldText = button.textContent;
+  button.disabled = true; button.textContent = loadingText;
+  el(resultId).textContent = 'Solicitação em andamento. Aguarde…';
+  try {
+    const r = await fetch(url, {method:'POST',headers:{'X-Admin-Secret':secret}});
+    const d = await r.json();
+    if (!r.ok) { el(resultId).textContent = d.detail || 'A operação não foi concluída.'; return; }
+    render(d);
+    await refresh();
+  } catch (e) {
+    el(resultId).textContent = 'Falha de comunicação. Atualize o status e confira os logs do serviço.';
+  } finally {
+    button.disabled = false; button.textContent = oldText; await refresh();
+  }
+}
+el('refresh').addEventListener('click', refresh);
+el('pauseButton').addEventListener('click', async () => {
+  const paused = statusData && statusData.shopee_collector_paused;
+  const resume = paused;
+  await postAction(resume ? '/admin/shopee/collector/resume' : '/admin/shopee/collector/pause', 'pauseButton', 'result', resume ? 'Retomando…' : 'Pausando…', d => { el('result').textContent = d.message || 'Estado da coleta Shopee atualizado.'; });
+});
+el('run').addEventListener('click', async () => {
+  await postAction('/admin/collector/run', 'run', 'mlResult', 'Coletando…', d => {
+    el('mlResult').textContent = 'Coleta Mercado Livre concluída.\\nCategorias: ' + (d.categories_seen || 0) + '\\nProdutos encontrados: ' + (d.items_seen || 0) + '\\nNovos produtos: ' + (d.new_items || 0) + '\\nErros: ' + (d.errors || 0);
+  });
+});
+el('runShopee').addEventListener('click', async () => {
+  await postAction('/admin/shopee/collector/run', 'runShopee', 'shopeeResult', 'Consultando Shopee…', d => {
+    el('shopeeResult').textContent = 'Teste Shopee concluído.\\nCategorias consultadas: ' + (d.categories_seen || 0) + '\\nProdutos encontrados: ' + (d.items_seen || 0) + '\\nOrigem nacional confirmada: ' + (d.accepted_national || 0) + '\\nOrigem desconhecida excluída: ' + (d.excluded_unknown_origin || 0) + '\\nInternacionais excluídos: ' + (d.excluded_international || 0) + '\\nLinks novos salvos: ' + (d.new_items || 0) + '\\nErros: ' + (d.errors || 0) + '\\nIntervalo: ' + Math.round((d.interval_seconds || 600) / 60) + ' min · Limite: ' + (d.max_new_products || 5) + '\\n' + (d.warning || 'Filtro nacional aplicado.') + '\\nColeta automática: ' + (d.automatic_collection_enabled ? 'ligada' : 'desligada');
+  });
+});
+refresh();
+</script>
+</body>
+</html>""")
