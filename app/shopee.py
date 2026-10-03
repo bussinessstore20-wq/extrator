@@ -427,6 +427,24 @@ async def collect_once() -> dict:
     origin_values_found = 0
     international_notices_found = 0
     origin_check_limit = 50
+    # Diagnostic snapshot of the actual affiliate API fields. Values are limited and
+    # aggregated so the test can reveal whether these fields are strings, lists, or numeric enums.
+    offer_type_diagnostics = {"shop_type": {}, "cross_border_option": {}, "shipping_icon_type": {}}
+    def record_offer_value(field, value):
+        if value is None:
+            label = "null"
+        elif isinstance(value, bool):
+            label = f"bool:{value}"
+        elif isinstance(value, (int, float, str)):
+            label = f"{type(value).__name__}:{str(value)[:70]}"
+        elif isinstance(value, (list, tuple)):
+            label = f"{type(value).__name__}:" + json.dumps(value, ensure_ascii=False, default=str)[:100]
+        elif isinstance(value, dict):
+            label = "dict:" + ",".join(str(k)[:25] for k in list(value.keys())[:8])
+        else:
+            label = type(value).__name__
+        bucket = offer_type_diagnostics[field]
+        bucket[label] = bucket.get(label, 0) + 1
     origin_semaphore = asyncio.Semaphore(10)
     for category in selected:
         if new_items >= max_new_products or origin_checks >= origin_check_limit:
@@ -441,6 +459,10 @@ async def collect_once() -> dict:
             )
             origin_checks += len(candidates)
             for item, page_result in zip(candidates, origins):
+                metadata = item.get("metadata") or {}
+                record_offer_value("shop_type", metadata.get("shop_type"))
+                record_offer_value("cross_border_option", metadata.get("cross_border_option"))
+                record_offer_value("shipping_icon_type", metadata.get("shipping_icon_type"))
                 if isinstance(page_result, dict):
                     page_origin = page_result.get("origin")
                     is_international = page_result.get("international") is True
@@ -498,6 +520,7 @@ async def collect_once() -> dict:
         "international_notices_found": international_notices_found,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
+        "offer_type_diagnostics": offer_type_diagnostics,
     }
     db.table("extrator_collection_runs").update({
         "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -520,6 +543,7 @@ async def collect_once() -> dict:
         "international_notices_found": international_notices_found,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
+        "offer_type_diagnostics": offer_type_diagnostics,
         "shipping_filter": "national_only_fail_closed",
         "max_new_products": max_new_products,
         "interval_seconds": config.SHOPEE_COLLECTOR_INTERVAL_SECONDS,
