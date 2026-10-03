@@ -1,13 +1,17 @@
-"""Shopee Affiliate Open API collector (official GraphQL API only).
+"""Shopee Affiliate Open API collector with public product-page origin verification.
 
-Automatic collection is opt-in and disabled by default. This module never scrapes
-Shopee pages or attempts to bypass access controls.
+Automatic collection is opt-in and disabled by default. Product detail pages are
+read only to inspect the visible "Enviado de" location; no login or access-control
+bypass is attempted.
 """
 import asyncio
 import hashlib
+import html
 import json
 import logging
+import re
 import time
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 
 import httpx
@@ -19,25 +23,103 @@ API_URL = "https://open-api.affiliate.shopee.com.br/graphql"
 logger = logging.getLogger(__name__)
 
 
-def classify_shipping_origin(product: dict) -> tuple[bool, str]:
-    """Accept only explicitly local products; productOfferV2 has no documented origin field.
+BRAZILIAN_STATES = (
+    "acre", "alagoas", "amapa", "amazonas", "bahia", "ceara", "distrito federal",
+    "espirito santo", "goias", "maranhao", "mato grosso", "mato grosso do sul",
+    "minas gerais", "para", "paraiba", "parana", "pernambuco", "piaui",
+    "rio de janeiro", "rio grande do norte", "rio grande do sul", "rondonia",
+    "roraima", "santa catarina", "sao paulo", "sergipe", "tocantins",
+)
+BRAZILIAN_CITIES = (
+    "sao paulo", "rio de janeiro", "brasilia", "belo horizonte", "vitoria",
+    "goiania", "cuiaba", "campo grande", "curitiba", "florianopolis", "porto alegre",
+    "salvador", "recife", "fortaleza", "natal", "joao pessoa", "maceio", "aracaju",
+    "teresina", "sao luis", "belem", "manaus", "macapa", "boa vista", "palmas",
+    "rio branco", "porto velho", "campinas", "guarulhos", "santo andre", "santos",
+    "sorocaba", "ribeirao preto", "uberlandia", "juiz de fora", "londrina", "maringa",
+    "joinville", "blumenau", "caxias do sul", "pelotas", "contagem", "betim",
+    "feira de santana", "caruaru", "petrolina", "jaboatao dos guararapes",
+)
+FOREIGN_ORIGINS = (
+    "china", "coreia", "coréia", "japao", "japão", "hong kong", "singapura",
+    "estados unidos", "united states", "vietna", "vietnã", "tailandia", "tailândia",
+    "malasia", "malásia", "indonesia", "indonésia", "internacional", "importado do",
+)
 
-    The current query deliberately does not request undocumented shipping fields.
-    Until a trustworthy source confirms Brazilian dispatch, origin remains unknown.
-    """
+
+def _normalise_origin(value: str) -> str:
+    import unicodedata
+    value = unicodedata.normalize("NFKD", value or "")
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def extract_shipping_origin(page_html: str) -> str | None:
+    """Read the public product-page 'Enviado de' label; no guessed origin."""
+    decoded = html.unescape(page_html or "")
+    decoded = re.sub(r"<[^>]+>", " ", decoded)
+    decoded = decoded.replace("\\u00e3", "ã").replace("\\u00ed", "í")
+    decoded = re.sub(r"\s+", " ", decoded)
+    match = re.search(
+        r"(?:Enviado\s+de|Shipping\s+from)\s*:?\s*"
+        r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .,'-]{1,55})",
+        decoded,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    origin = match.group(1)
+    origin = re.split(
+        r"\b(?:descri[cç][aã]o|detalhes do produto|frete|estoque|categoria|"
+        r"adicionar ao carrinho|comprar agora|garantia shopee)\b",
+        origin,
+        flags=re.IGNORECASE,
+    )[0]
+    origin = re.sub(r"^[\s:,-]+|[\s:,-]+$", "", origin)
+    return origin[:60] or None
+
+
+def classify_shipping_origin(product: dict) -> tuple[bool, str]:
+    """Only classify a product when its public detail page exposes a Brazilian origin."""
     metadata = product.get("metadata") or {}
-    def norm(value):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-    icon_type = norm(metadata.get("shipping_icon_type"))
-    cross_border = norm(metadata.get("cross_border_option"))
-    if icon_type == 1 or cross_border == 1:
+    origin = str(metadata.get("shipping_origin_page") or "").strip()
+    normalized = _normalise_origin(origin)
+    if not normalized:
+        return False, "origin_unknown"
+    foreign = {_normalise_origin(value) for value in FOREIGN_ORIGINS}
+    if any(value in normalized for value in foreign):
         return False, "international"
-    if icon_type == 0 or cross_border == 0:
+    states = {_normalise_origin(value) for value in BRAZILIAN_STATES}
+    cities = {_normalise_origin(value) for value in BRAZILIAN_CITIES}
+    if any(re.search(r"\b" + re.escape(state) + r"\b", normalized) for state in states):
+        return True, "national_confirmed"
+    if normalized in cities:
         return True, "national_confirmed"
     return False, "origin_unknown"
+
+
+async def fetch_shipping_origin(item: dict, semaphore: asyncio.Semaphore) -> str | None:
+    """Check Shopee's public product detail page for its displayed dispatch location."""
+    metadata = item.get("metadata") or {}
+    product_url = str(metadata.get("product_link") or "").strip()
+    parsed = urlparse(product_url)
+    if parsed.scheme != "https" or parsed.hostname not in {"shopee.com.br", "www.shopee.com.br"}:
+        return None
+    async with semaphore:
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(4.0, connect=2.0),
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; Extrator/1.0; +https://shopee.com.br)"},
+            ) as client:
+                response = await client.get(product_url)
+            final_host = urlparse(str(response.url)).hostname
+            if response.status_code >= 400 or final_host not in {"shopee.com.br", "www.shopee.com.br"}:
+                return None
+            return extract_shipping_origin(response.text)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("Não foi possível confirmar origem no anúncio Shopee: %s", type(exc).__name__)
+            return None
 CATEGORIES = [
     {"id": "shopee_ofertas", "name": "Ofertas", "keyword": "ofertas"},
     {"id": "shopee_eletronicos", "name": "Eletrônicos", "keyword": "eletronicos"},
@@ -220,15 +302,26 @@ async def collect_once() -> dict:
     seen = new_items = errors = 0
     accepted_national = excluded_international = excluded_unknown_origin = 0
     category_errors = []
+    origin_checks = 0
+    origin_values_found = 0
+    origin_check_limit = 50
+    origin_semaphore = asyncio.Semaphore(10)
     for category in selected:
-        if new_items >= max_new_products:
+        if new_items >= max_new_products or origin_checks >= origin_check_limit:
             break
         try:
             items = await search_category(category)
             seen += len(items)
-            for item in items:
-                if new_items >= max_new_products:
-                    break
+            candidates = items[: max(0, origin_check_limit - origin_checks)]
+            origins = await asyncio.gather(
+                *(fetch_shipping_origin(item, origin_semaphore) for item in candidates),
+                return_exceptions=True,
+            )
+            origin_checks += len(candidates)
+            for item, page_origin in zip(candidates, origins):
+                if isinstance(page_origin, str) and page_origin:
+                    origin_values_found += 1
+                    item.setdefault("metadata", {})["shipping_origin_page"] = page_origin
                 accepted, origin_status = classify_shipping_origin(item)
                 item.setdefault("metadata", {})["shipping_origin_filter"] = origin_status
                 if not accepted:
@@ -272,6 +365,10 @@ async def collect_once() -> dict:
         "accepted_national": accepted_national,
         "excluded_international": excluded_international,
         "excluded_unknown_origin": excluded_unknown_origin,
+        "product_pages_checked": origin_checks,
+        "origin_values_found": origin_values_found,
+        "products_without_origin_check": max(0, seen - origin_checks),
+        "origin_source": "public_shopee_product_detail",
     }
     db.table("extrator_collection_runs").update({
         "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -289,6 +386,9 @@ async def collect_once() -> dict:
         "accepted_national": accepted_national,
         "excluded_international": excluded_international,
         "excluded_unknown_origin": excluded_unknown_origin,
+        "product_pages_checked": origin_checks,
+        "products_without_origin_check": max(0, seen - origin_checks),
+        "origin_source": "public_shopee_product_detail",
         "shipping_filter": "national_only_fail_closed",
         "max_new_products": max_new_products,
         "interval_seconds": config.SHOPEE_COLLECTOR_INTERVAL_SECONDS,
@@ -296,7 +396,7 @@ async def collect_once() -> dict:
         "errors": errors,
         "category_errors": category_errors[:5],
         "warning": (
-            "A API oficial não retornou dados de origem de envio; nenhum produto de origem desconhecida será enviado."
+            "A página pública dos anúncios não confirmou a origem nacional nos produtos verificados; nenhum produto de origem desconhecida será enviado."
             if excluded_unknown_origin and accepted_national == 0 else None
         ),
     }
