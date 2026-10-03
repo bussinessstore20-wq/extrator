@@ -146,7 +146,7 @@ def extract_structured_shipping_origin(payload: dict) -> str | None:
                 if value and len(value) <= 100:
                     found.append(value)
             match = re.search(
-                r"(?:Enviado\\s+de|Shipping\\s+from)\\s*:?\\s*"
+                r"(?:Enviado\s+de|Shipping\s+from)\s*:?\s*"
                 r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .,'-]{1,55})",
                 value,
                 flags=re.IGNORECASE,
@@ -158,7 +158,7 @@ def extract_structured_shipping_origin(payload: dict) -> str | None:
     for origin in found:
         normalized = _normalise_origin(origin)
         if any(_normalise_origin(city) in normalized for city in BRAZILIAN_CITIES) or any(
-            re.search(r"\\b" + re.escape(_normalise_origin(state)) + r"\\b", normalized)
+            re.search(r"\b" + re.escape(_normalise_origin(state)) + r"\b", normalized)
             for state in BRAZILIAN_STATES
         ):
             return origin
