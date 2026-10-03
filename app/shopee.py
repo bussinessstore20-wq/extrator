@@ -259,7 +259,7 @@ async def collect_once() -> dict:
         "shipping_origin_policy": "confirmed_national_only",
     })
     db.table("extrator_settings").upsert({"key": "shopee_collector", "value": settings}).execute()
-    status = "partial" if errors else ("empty" if accepted_national == 0 else "completed")
+    status = "partial" if errors else "completed"  # zero accepted products is still a completed run; explain zero results in details
     details = {
         "platform": "shopee",
         "next_category_cursor": next_cursor,
