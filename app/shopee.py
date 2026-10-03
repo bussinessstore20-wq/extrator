@@ -303,6 +303,7 @@ async def collect_once() -> dict:
     accepted_national = excluded_international = excluded_unknown_origin = 0
     category_errors = []
     origin_checks = 0
+    origin_values_found = 0
     origin_check_limit = 50
     origin_semaphore = asyncio.Semaphore(10)
     for category in selected:
@@ -319,6 +320,7 @@ async def collect_once() -> dict:
             origin_checks += len(candidates)
             for item, page_origin in zip(candidates, origins):
                 if isinstance(page_origin, str) and page_origin:
+                    origin_values_found += 1
                     item.setdefault("metadata", {})["shipping_origin_page"] = page_origin
                 accepted, origin_status = classify_shipping_origin(item)
                 item.setdefault("metadata", {})["shipping_origin_filter"] = origin_status
@@ -364,6 +366,7 @@ async def collect_once() -> dict:
         "excluded_international": excluded_international,
         "excluded_unknown_origin": excluded_unknown_origin,
         "product_pages_checked": origin_checks,
+        "origin_values_found": origin_values_found,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
     }
