@@ -59,7 +59,12 @@ def _normalise_origin(value: str) -> str:
 
 
 def inspect_international_evidence(page_html: str) -> dict:
-    """Return only visible-page evidence that can justify an international exclusion."""
+    """Return product-specific international evidence only.
+
+    Generic tax/import tooltips are not product-level evidence: Shopee can
+    ship the same UI strings for unrelated listings. Only an explicit
+    product shipping label is accepted here.
+    """
     decoded = html.unescape(page_html or "")
     decoded = decoded.replace("\\u00e7", "ç").replace("\\u00e3", "ã")
     decoded = re.sub(
@@ -73,28 +78,27 @@ def inspect_international_evidence(page_html: str) -> dict:
     visible = re.sub(r"\\s+", " ", visible).strip()
     normalized = _normalise_origin(visible)
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
-    tax_phrase = "produto internacional objeto de declaracao de importacao e sujeito a impostos estaduais e federais"
-    tax_match = re.search(re.escape(tax_phrase), normalized)
-    exterior_match = re.search(r"\\benvio do exterior\\b", normalized)
+
+    # Do NOT use the generic import/tax tooltip as evidence.
+    # It was proven to occur in unrelated product pages.
+    exterior_match = re.search(r"\\benviado\\s+de\\s+(?:o\\s+)?exterior\\b", normalized)
+    if not exterior_match:
+        exterior_match = re.search(r"\\bshipping\\s+from\\s+(?:the\\s+)?exterior\\b", normalized)
+
     evidence = None
     evidence_type = None
-    if tax_match:
-        start = max(0, tax_match.start() - 180)
-        end = min(len(normalized), tax_match.end() + 180)
-        evidence = normalized[start:end]
-        evidence_type = "tax_notice_visible"
-    elif exterior_match:
+    if exterior_match:
         start = max(0, exterior_match.start() - 120)
         end = min(len(normalized), exterior_match.end() + 180)
         evidence = normalized[start:end]
         evidence_type = "shipping_from_exterior_visible"
+
     return {
         "international": bool(evidence_type),
         "evidence_type": evidence_type,
         "evidence": evidence,
         "visible_text_length": len(normalized),
     }
-
 
 def has_international_import_notice(page_html: str) -> bool:
     return inspect_international_evidence(page_html)["international"]
