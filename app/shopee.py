@@ -58,12 +58,10 @@ def _normalise_origin(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().lower()
 
 
-def has_international_import_notice(page_html: str) -> bool:
-    """Detect an import warning in visible product-page text, not scripts/templates."""
+def inspect_international_evidence(page_html: str) -> dict:
+    """Return only visible-page evidence that can justify an international exclusion."""
     decoded = html.unescape(page_html or "")
     decoded = decoded.replace("\\u00e7", "ç").replace("\\u00e3", "ã")
-    # The HTML may contain generic notices inside scripts, hydration JSON, or templates.
-    # Those can make every product look international; only inspect rendered page text.
     decoded = re.sub(
         r"<(script|style|noscript|template|svg)\\b[^>]*>.*?</\\1\\s*>",
         " ",
@@ -71,23 +69,43 @@ def has_international_import_notice(page_html: str) -> bool:
         flags=re.IGNORECASE | re.DOTALL,
     )
     decoded = re.sub(r"<!--.*?-->", " ", decoded, flags=re.DOTALL)
-    decoded = re.sub(r"<[^>]+>", " ", decoded)
-    normalized = _normalise_origin(decoded)
+    visible = re.sub(r"<[^>]+>", " ", decoded)
+    visible = re.sub(r"\\s+", " ", visible).strip()
+    normalized = _normalise_origin(visible)
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
-    tax_notice = bool(re.search(
-        r"produto internacional objeto de declaracao de importacao "
-        r"e sujeito a impostos estaduais e federais",
-        normalized,
-    ))
-    exterior_label = bool(re.search(r"\\benvio do exterior\\b", normalized))
-    return tax_notice or exterior_label
+    tax_phrase = "produto internacional objeto de declaracao de importacao e sujeito a impostos estaduais e federais"
+    tax_match = re.search(re.escape(tax_phrase), normalized)
+    exterior_match = re.search(r"\\benvio do exterior\\b", normalized)
+    evidence = None
+    evidence_type = None
+    if tax_match:
+        start = max(0, tax_match.start() - 180)
+        end = min(len(normalized), tax_match.end() + 180)
+        evidence = normalized[start:end]
+        evidence_type = "tax_notice_visible"
+    elif exterior_match:
+        start = max(0, exterior_match.start() - 120)
+        end = min(len(normalized), exterior_match.end() + 180)
+        evidence = normalized[start:end]
+        evidence_type = "shipping_from_exterior_visible"
+    return {
+        "international": bool(evidence_type),
+        "evidence_type": evidence_type,
+        "evidence": evidence,
+        "visible_text_length": len(normalized),
+    }
+
+
+def has_international_import_notice(page_html: str) -> bool:
+    return inspect_international_evidence(page_html)["international"]
 
 
 def inspect_product_page(page_html: str) -> dict:
-    """Read both the import-tax warning and the displayed dispatch location."""
+    """Read origin plus auditable visible evidence from the product page."""
+    international = inspect_international_evidence(page_html)
     return {
         "origin": extract_shipping_origin(page_html),
-        "international": has_international_import_notice(page_html),
+        **international,
     }
 
 
@@ -596,7 +614,7 @@ async def collect_once() -> dict:
     origin_check_limit = 50
     # Diagnostic snapshot of the actual affiliate API fields. Values are limited and
     # aggregated so the test can reveal whether these fields are strings, lists, or numeric enums.
-    offer_type_diagnostics = {"shop_type": {}, "api_origin_fields": {}}
+    offer_type_diagnostics = {"shop_type": {}, "api_origin_fields": {}}\n    _evidence_samples = []
     def record_offer_value(field, value):
         if value is None:
             label = "null"
