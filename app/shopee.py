@@ -316,6 +316,16 @@ def _unwrap_named_type(type_info: dict | None) -> str | None:
     return None
 
 
+def _unwrap_type_kind(type_info: dict | None) -> str:
+    current = type_info or {}
+    for _ in range(6):
+        kind = str(current.get("kind") or "").upper()
+        if kind in {"SCALAR", "ENUM", "OBJECT", "INPUT_OBJECT", "INTERFACE", "UNION"}:
+            return kind
+        current = current.get("ofType") or {}
+    return ""
+
+
 async def inspect_affiliate_schema() -> dict:
     """Discover scalar/enum product-offer fields exposed by this API account."""
     global _AFFILIATE_ORIGIN_FIELDS, _AFFILIATE_SCHEMA_DIAGNOSTIC
@@ -411,7 +421,7 @@ async def inspect_affiliate_schema() -> dict:
             for field in fields
             if field.get("name")
             and any(keyword in str(field.get("name")).lower() for keyword in keywords)
-            and str((field.get("type") or {}).get("kind") or "").upper() in {"SCALAR", "ENUM"}
+            and _unwrap_type_kind(field.get("type")) in {"SCALAR", "ENUM"}
         })
         _AFFILIATE_ORIGIN_FIELDS = relevant
         _AFFILIATE_SCHEMA_DIAGNOSTIC = {
