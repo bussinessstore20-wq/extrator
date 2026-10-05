@@ -22,6 +22,10 @@ from app.db import get_db, log_event
 API_URL = "https://open-api.affiliate.shopee.com.br/graphql"
 logger = logging.getLogger(__name__)
 
+# Discovered once per process from the account's GraphQL schema.
+_AFFILIATE_ORIGIN_FIELDS = None
+_AFFILIATE_SCHEMA_DIAGNOSTIC = None
+
 
 BRAZILIAN_STATES = (
     "acre", "alagoas", "amapa", "amazonas", "bahia", "ceara", "distrito federal",
@@ -303,7 +307,179 @@ def _gql_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-async def search_category(category: dict) -> list[dict]:
+def _unwrap_named_type(type_info: dict | None) -> str | None:
+    current = type_info or {}
+    for _ in range(6):
+        if current.get("name"):
+            return str(current["name"])
+        current = current.get("ofType") or {}
+    return None
+
+
+async def inspect_affiliate_schema() -> dict:
+    """Discover the real product-offer fields exposed by this API account."""
+    global _AFFILIATE_ORIGIN_FIELDS, _AFFILIATE_SCHEMA_DIAGNOSTIC
+    if _AFFILIATE_SCHEMA_DIAGNOSTIC is not None:
+        return _AFFILIATE_SCHEMA_DIAGNOSTIC
+
+    probe = """
+    query {
+      __schema {
+        queryType {
+          fields {
+            name
+            type {
+              kind
+              name
+              ofType {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    try:
+        data = await graphql(probe)
+        query_fields = ((data.get("__schema") or {}).get("queryType") or {}).get("fields") or []
+        product_field = next(
+            (field for field in query_fields if field.get("name") == "productOfferV2"),
+            None,
+        )
+        product_type = _unwrap_named_type((product_field or {}).get("type"))
+        if not product_type:
+            raise RuntimeError("o schema não informou o tipo de retorno de productOfferV2")
+
+        detail_probe = f'''
+        query {{
+          __type(name: {_gql_string(product_type)}) {{
+            name
+            fields {{ name }}
+          }}
+        }}
+        '''
+        detail = await graphql(detail_probe)
+        type_data = detail.get("__type") or {}
+        fields = [
+            str(item.get("name"))
+            for item in (type_data.get("fields") or [])
+            if item.get("name")
+        ]
+        keywords = (
+            "cross", "ship", "origin", "warehouse", "country", "location",
+            "dispatch", "logistic", "delivery",
+        )
+        relevant = sorted({
+            field for field in fields
+            if any(keyword in field.lower() for keyword in keywords)
+        })
+        _AFFILIATE_ORIGIN_FIELDS = relevant
+        _AFFILIATE_SCHEMA_DIAGNOSTIC = {
+            "introspection": "ok",
+            "product_offer_type": product_type,
+            "origin_related_fields": relevant,
+            "origin_related_field_count": len(relevant),
+        }
+    except Exception as exc:
+        _AFFILIATE_ORIGIN_FIELDS = []
+        _AFFILIATE_SCHEMA_DIAGNOSTIC = {
+            "introspection": "failed",
+            "error": str(exc)[:250],
+            "origin_related_fields": [],
+            "origin_related_field_count": 0,
+        }
+    return _AFFILIATE_SCHEMA_DIAGNOSTIC
+
+
+def _build_product_offer_query(keyword: str, limit: int, extra_fields: list[str]) -> str:
+    base_fields = [
+        "itemId", "productName", "productLink", "offerLink", "imageUrl",
+        "priceMin", "priceMax", "priceDiscountRate", "sales", "ratingStar",
+        "commissionRate", "sellerCommissionRate", "shopeeCommissionRate",
+        "shopId", "shopName", "shopType",
+    ]
+    fields = []
+    for field in base_fields + extra_fields:
+        if field not in fields:
+            fields.append(field)
+    return (
+        "query { productOfferV2("
+        f"keyword: {keyword}, listType: 0, sortType: 1, page: 1, limit: {limit}"
+        ") { nodes { " + " ".join(fields) + " } "
+        "pageInfo { page limit hasNextPage } } }"
+    )
+
+
+async def search_category(category: dict) -> tuple[list[dict], dict]:
+    keyword = _gql_string(str(category.get("keyword") or category.get("name") or "ofertas"))
+    limit = min(50, max(1, config.SHOPEE_MAX_ITEMS_PER_CATEGORY))
+    schema = await inspect_affiliate_schema()
+    extra_fields = list(_AFFILIATE_ORIGIN_FIELDS or [])[:25]
+    query = _build_product_offer_query(keyword, limit, extra_fields)
+    payload = await graphql(query)
+    result = payload.get("productOfferV2") or {}
+    nodes = result.get("nodes") or []
+    items = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        item_id = str(node.get("itemId") or "").strip()
+        shop_id = str(node.get("shopId") or "").strip()
+        title = str(node.get("productName") or "").strip()
+        product_link = str(node.get("productLink") or "").strip()
+        offer_link = str(node.get("offerLink") or "").strip()
+        image_url = str(node.get("imageUrl") or "").strip() or None
+        if not item_id or not title or not (offer_link or product_link):
+            continue
+        price = node.get("priceMin")
+        try:
+            price = float(price) if price not in (None, "") else None
+        except (TypeError, ValueError):
+            price = None
+        api_origin_data = {
+            field: node.get(field)
+            for field in extra_fields
+            if node.get(field) not in (None, "", [], {})
+        }
+        items.append({
+            "id": f"{shop_id}-{item_id}" if shop_id else item_id,
+            "title": title,
+            "price": price,
+            "currency_id": "BRL",
+            "thumbnail": image_url,
+            "permalink": offer_link or product_link,
+            "metadata": {
+                "platform": "shopee",
+                "shop_id": shop_id or None,
+                "item_id": item_id,
+                "product_link": product_link or None,
+                "affiliate_link": offer_link or None,
+                "price_max": node.get("priceMax"),
+                "discount_rate": node.get("priceDiscountRate"),
+                "sales": node.get("sales"),
+                "rating": node.get("ratingStar"),
+                "commission_rate": node.get("commissionRate"),
+                "seller_commission_rate": node.get("sellerCommissionRate"),
+                "shopee_commission_rate": node.get("shopeeCommissionRate"),
+                "shop_name": node.get("shopName"),
+                "shop_type": node.get("shopType"),
+                "api_origin_fields": api_origin_data,
+            },
+        })
+    return items, schema
+
+
+def persist_product(item: dict, category_id: str) -> bool:
     keyword = _gql_string(str(category.get("keyword") or category.get("name") or "ofertas"))
     limit = min(50, max(1, config.SHOPEE_MAX_ITEMS_PER_CATEGORY))
     query = (
@@ -439,7 +615,7 @@ async def collect_once() -> dict:
     origin_check_limit = 50
     # Diagnostic snapshot of the actual affiliate API fields. Values are limited and
     # aggregated so the test can reveal whether these fields are strings, lists, or numeric enums.
-    offer_type_diagnostics = {"shop_type": {}, "cross_border_option": {}, "shipping_icon_type": {}}
+    offer_type_diagnostics = {"shop_type": {}, "api_origin_fields": {}}
     def record_offer_value(field, value):
         if value is None:
             label = "null"
@@ -460,7 +636,7 @@ async def collect_once() -> dict:
         if new_items >= max_new_products or origin_checks >= origin_check_limit:
             break
         try:
-            items = await search_category(category)
+            items, schema_diagnostic = await search_category(category)
             seen += len(items)
             candidates = items[: max(0, origin_check_limit - origin_checks)]
             origins = await asyncio.gather(
@@ -471,8 +647,8 @@ async def collect_once() -> dict:
             for item, page_result in zip(candidates, origins):
                 metadata = item.get("metadata") or {}
                 record_offer_value("shop_type", metadata.get("shop_type"))
-                record_offer_value("cross_border_option", metadata.get("cross_border_option"))
-                record_offer_value("shipping_icon_type", metadata.get("shipping_icon_type"))
+                for field_name, field_value in (metadata.get("api_origin_fields") or {}).items():
+                    record_offer_value(f"api:{field_name}", field_value)
                 if isinstance(page_result, dict):
                     page_origin = page_result.get("origin")
                     is_international = page_result.get("international") is True
@@ -531,6 +707,7 @@ async def collect_once() -> dict:
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "offer_type_diagnostics": offer_type_diagnostics,
+        "affiliate_schema": _AFFILIATE_SCHEMA_DIAGNOSTIC,
     }
     db.table("extrator_collection_runs").update({
         "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -554,6 +731,7 @@ async def collect_once() -> dict:
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "offer_type_diagnostics": offer_type_diagnostics,
+        "affiliate_schema": _AFFILIATE_SCHEMA_DIAGNOSTIC,
         "shipping_filter": "national_only_fail_closed",
         "max_new_products": max_new_products,
         "interval_seconds": config.SHOPEE_COLLECTOR_INTERVAL_SECONDS,
