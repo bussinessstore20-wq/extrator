@@ -651,7 +651,15 @@ async def collect_once() -> dict:
                     record_offer_value(f"api:{field_name}", field_value)
                 if isinstance(page_result, dict):
                     page_origin = page_result.get("origin")
-                    is_international = page_result.get("international") is True
+                    evidence_type = str(page_result.get("evidence_type") or "").strip()
+                    evidence_text = str(page_result.get("evidence") or "").strip()
+                    # International exclusion is allowed only when the page returned
+                    # an explicit, auditable visible-page evidence record.
+                    is_international = (
+                        page_result.get("international") is True
+                        and bool(evidence_type)
+                        and bool(evidence_text)
+                    )
                     item.setdefault("metadata", {})["shipping_is_international"] = is_international
                     if is_international:
                         international_notices_found += 1
@@ -660,8 +668,8 @@ async def collect_once() -> dict:
                         if len(_evidence_samples) < 5:
                             _evidence_samples.append({
                                 "item_id": item.get("id"),
-                                "evidence_type": page_result.get("evidence_type"),
-                                "evidence": page_result.get("evidence"),
+                                "evidence_type": evidence_type,
+                                "evidence": evidence_text,
                             })
                     if isinstance(page_origin, str) and page_origin:
                         origin_values_found += 1
@@ -737,6 +745,7 @@ async def collect_once() -> dict:
         "product_pages_checked": origin_checks,
         "origin_values_found": origin_values_found,
         "international_notices_found": international_notices_found,
+        "international_evidence_samples": _evidence_samples,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "offer_type_diagnostics": offer_type_diagnostics,
