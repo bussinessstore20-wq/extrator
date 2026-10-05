@@ -521,66 +521,6 @@ async def search_category(category: dict) -> tuple[list[dict], dict]:
 
 
 def persist_product(item: dict, category_id: str) -> bool:
-    keyword = _gql_string(str(category.get("keyword") or category.get("name") or "ofertas"))
-    limit = min(50, max(1, config.SHOPEE_MAX_ITEMS_PER_CATEGORY))
-    query = (
-        "query { productOfferV2("
-        f"keyword: {keyword}, listType: 0, sortType: 1, page: 1, limit: {limit}"
-        ") { nodes { itemId productName productLink offerLink imageUrl "
-        "priceMin priceMax priceDiscountRate sales ratingStar commissionRate "
-        "sellerCommissionRate shopeeCommissionRate shopId shopName shopType } "
-        "pageInfo { page limit hasNextPage } } }"
-    )
-    payload = await graphql(query)
-    result = payload.get("productOfferV2") or {}
-    nodes = result.get("nodes") or []
-    items = []
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        item_id = str(node.get("itemId") or "").strip()
-        shop_id = str(node.get("shopId") or "").strip()
-        title = str(node.get("productName") or "").strip()
-        product_link = str(node.get("productLink") or "").strip()
-        offer_link = str(node.get("offerLink") or "").strip()
-        image_url = str(node.get("imageUrl") or "").strip() or None
-        if not item_id or not title or not (offer_link or product_link):
-            continue
-        price = node.get("priceMin")
-        try:
-            price = float(price) if price not in (None, "") else None
-        except (TypeError, ValueError):
-            price = None
-        items.append({
-            "id": f"{shop_id}-{item_id}" if shop_id else item_id,
-            "title": title,
-            "price": price,
-            "currency_id": "BRL",
-            "thumbnail": image_url,
-            "permalink": offer_link or product_link,
-            "metadata": {
-                "platform": "shopee",
-                "shop_id": shop_id or None,
-                "item_id": item_id,
-                "product_link": product_link or None,
-                "affiliate_link": offer_link or None,
-                "price_max": node.get("priceMax"),
-                "discount_rate": node.get("priceDiscountRate"),
-                "sales": node.get("sales"),
-                "rating": node.get("ratingStar"),
-                "commission_rate": node.get("commissionRate"),
-                "seller_commission_rate": node.get("sellerCommissionRate"),
-                "shopee_commission_rate": node.get("shopeeCommissionRate"),
-                "shop_name": node.get("shopName"),
-                "shop_type": node.get("shopType"),
-                "shipping_icon_type": node.get("shippingIconType"),
-                "cross_border_option": node.get("cbOption"),
-            },
-        })
-    return items
-
-
-def persist_product(item: dict, category_id: str) -> bool:
     item_id = str(item.get("id") or "").strip()
     permalink = str(item.get("permalink") or "").strip()
     title = str(item.get("title") or "").strip()
