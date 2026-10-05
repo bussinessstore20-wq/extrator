@@ -317,7 +317,7 @@ def _unwrap_named_type(type_info: dict | None) -> str | None:
 
 
 async def inspect_affiliate_schema() -> dict:
-    """Discover the real product-offer fields exposed by this API account."""
+    """Discover scalar/enum product-offer fields exposed by this API account."""
     global _AFFILIATE_ORIGIN_FIELDS, _AFFILIATE_SCHEMA_DIAGNOSTIC
     if _AFFILIATE_SCHEMA_DIAGNOSTIC is not None:
         return _AFFILIATE_SCHEMA_DIAGNOSTIC
@@ -356,37 +356,68 @@ async def inspect_affiliate_schema() -> dict:
             (field for field in query_fields if field.get("name") == "productOfferV2"),
             None,
         )
-        product_type = _unwrap_named_type((product_field or {}).get("type"))
-        if not product_type:
+        connection_type = _unwrap_named_type((product_field or {}).get("type"))
+        if not connection_type:
             raise RuntimeError("o schema não informou o tipo de retorno de productOfferV2")
+
+        connection_probe = f'''
+        query {{
+          __type(name: {_gql_string(connection_type)}) {{
+            name
+            fields {{
+              name
+              type {{
+                kind
+                name
+                ofType {{ kind name }}
+              }}
+            }}
+          }}
+        }}
+        '''
+        connection_data = await graphql(connection_probe)
+        connection_fields = ((connection_data.get("__type") or {}).get("fields") or [])
+        nodes_field = next(
+            (field for field in connection_fields if field.get("name") == "nodes"),
+            None,
+        )
+        node_type = _unwrap_named_type((nodes_field or {}).get("type"))
+        if not node_type:
+            raise RuntimeError("o schema não informou o tipo dos nodes de productOfferV2")
 
         detail_probe = f'''
         query {{
-          __type(name: {_gql_string(product_type)}) {{
+          __type(name: {_gql_string(node_type)}) {{
             name
-            fields {{ name }}
+            fields {{
+              name
+              type {{
+                kind
+                name
+                ofType {{ kind name }}
+              }}
+            }}
           }}
         }}
         '''
         detail = await graphql(detail_probe)
-        type_data = detail.get("__type") or {}
-        fields = [
-            str(item.get("name"))
-            for item in (type_data.get("fields") or [])
-            if item.get("name")
-        ]
+        fields = (detail.get("__type") or {}).get("fields") or []
         keywords = (
             "cross", "ship", "origin", "warehouse", "country", "location",
             "dispatch", "logistic", "delivery",
         )
         relevant = sorted({
-            field for field in fields
-            if any(keyword in field.lower() for keyword in keywords)
+            str(field.get("name"))
+            for field in fields
+            if field.get("name")
+            and any(keyword in str(field.get("name")).lower() for keyword in keywords)
+            and str((field.get("type") or {}).get("kind") or "").upper() in {"SCALAR", "ENUM"}
         })
         _AFFILIATE_ORIGIN_FIELDS = relevant
         _AFFILIATE_SCHEMA_DIAGNOSTIC = {
             "introspection": "ok",
-            "product_offer_type": product_type,
+            "product_offer_type": connection_type,
+            "product_offer_node_type": node_type,
             "origin_related_fields": relevant,
             "origin_related_field_count": len(relevant),
         }
