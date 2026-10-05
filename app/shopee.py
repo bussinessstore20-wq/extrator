@@ -614,7 +614,8 @@ async def collect_once() -> dict:
     origin_check_limit = 50
     # Diagnostic snapshot of the actual affiliate API fields. Values are limited and
     # aggregated so the test can reveal whether these fields are strings, lists, or numeric enums.
-    offer_type_diagnostics = {"shop_type": {}, "api_origin_fields": {}}\n    _evidence_samples = []
+    offer_type_diagnostics = {"shop_type": {}, "api_origin_fields": {}}
+    _evidence_samples = []
     def record_offer_value(field, value):
         if value is None:
             label = "null"
@@ -654,6 +655,14 @@ async def collect_once() -> dict:
                     item.setdefault("metadata", {})["shipping_is_international"] = is_international
                     if is_international:
                         international_notices_found += 1
+                        item.setdefault("metadata", {})["international_evidence_type"] = page_result.get("evidence_type")
+                        item.setdefault("metadata", {})["international_evidence"] = page_result.get("evidence")
+                        if len(_evidence_samples) < 5:
+                            _evidence_samples.append({
+                                "item_id": item.get("id"),
+                                "evidence_type": page_result.get("evidence_type"),
+                                "evidence": page_result.get("evidence"),
+                            })
                     if isinstance(page_origin, str) and page_origin:
                         origin_values_found += 1
                         item.setdefault("metadata", {})["shipping_origin_page"] = page_origin
@@ -703,6 +712,7 @@ async def collect_once() -> dict:
         "product_pages_checked": origin_checks,
         "origin_values_found": origin_values_found,
         "international_notices_found": international_notices_found,
+        "international_evidence_samples": _evidence_samples,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "offer_type_diagnostics": offer_type_diagnostics,
