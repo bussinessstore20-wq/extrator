@@ -96,6 +96,24 @@ async def webhook_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Valida o banco na inicialização para que o log do Render mostre imediatamente
+    # se a falha é ausência de credencial ou erro real de acesso ao Supabase.
+    if not config.supabase_ready():
+        logger.error(
+            "SUPABASE DESCONFIGURADO: SUPABASE_URL=%s, SUPABASE_SERVICE_ROLE_KEY=%s",
+            bool(config.SUPABASE_URL),
+            bool(config.SUPABASE_SERVICE_ROLE_KEY),
+        )
+    else:
+        try:
+            get_db().table("extrator_settings").select("key").limit(1).execute()
+            logger.info("Supabase conectado com sucesso no startup")
+        except Exception as exc:
+            logger.error(
+                "SUPABASE CONEXAO FALHOU NO STARTUP: %s: %s",
+                type(exc).__name__,
+                str(exc)[:500],
+            )
     if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_ADMIN_IDS:
         try:
             runtime["bot"] = await start_bot()
