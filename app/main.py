@@ -8,6 +8,7 @@ from app import config
 from app.db import get_db, log_event
 from app.mercadolivre import collect_once
 from app.shopee import collect_once as collect_shopee_once, shopee_ready, inspect_affiliate_schema
+from app.shopee_public import collect_public_once
 from telegram import Update
 from app.telegram_bot import start_bot, send_pending_products, telegram_webhook_secret
 
@@ -378,6 +379,20 @@ async def run_shopee_collection(x_admin_secret: str | None = Header(default=None
         raise HTTPException(502, f"Coleta Shopee falhou: {str(exc)[:450]}") from exc
 
 
+@app.post("/admin/shopee/public-test")
+async def shopee_public_test(x_admin_secret: str | None = Header(default=None)):
+    if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
+        raise HTTPException(403, "Não autorizado.")
+    try:
+        result = await collect_public_once(max_products=5, pages_per_category=2)
+        runtime["shopee_last_error"] = None
+        return result
+    except Exception as exc:
+        runtime["shopee_last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+        logger.exception("Falha na coleta pública da Shopee")
+        raise HTTPException(502, f"Coleta pública Shopee falhou: {str(exc)[:450]}") from exc
+
+
 @app.get('/admin/collector', response_class=HTMLResponse)
 async def collector_dashboard():
     return HTMLResponse(r"""<!doctype html>
@@ -487,6 +502,7 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
       <div class="op-title"><div class="op-icon">🛍️</div><div><h3>Testar coleta Shopee</h3><small>API oficial de afiliados</small></div></div>
       <p class="sub">A coleta automática permanece desligada. O teste manual não a ativa.</p>
       <button id="runShopee" class="btn primary">▶ Testar coleta Shopee</button>
+      <button id="runShopeePublic" class="btn secondary">🌐 Testar coleta pública (navegador)</button>
       <button id="pauseButton" class="btn orange">⏸ Pausar Shopee</button>
     </div>
     <div class="notice"><strong>Filtro de origem nacional ativo</strong>Produtos sem informação confiável de envio nacional são excluídos. Não serão enviados links de origem desconhecida.</div>
@@ -575,6 +591,28 @@ el('run').addEventListener('click', async () => {
     el('mlResult').textContent = 'Coleta Mercado Livre concluída.\nCategorias: ' + (d.categories_seen || 0) + '\nProdutos encontrados: ' + (d.items_seen || 0) + '\nNovos produtos: ' + (d.new_items || 0) + '\nErros: ' + (d.errors || 0);
   });
 });
+
+el('runShopeePublic').addEventListener('click', async () => {
+  await postAction('/admin/shopee/public-test', 'runShopeePublic', 'shopeeResult', 'Abrindo Shopee…', d => {
+    el('shopeeResult').textContent =
+      'Teste público Shopee concluído.\\n' +
+      'Categorias consultadas: ' + (d.categories_checked || 0) + '\\n' +
+      'Links descobertos: ' + (d.products_discovered || 0) + '\\n' +
+      'Páginas de produtos verificadas: ' + (d.product_pages_checked || 0) + '\\n' +
+      '🇧🇷 Nacionais confirmados: ' + (d.national_confirmed || 0) + '\\n' +
+      '🌎 Internacionais confirmados: ' + (d.international_confirmed || 0) + '\\n' +
+      '❓ Origem desconhecida: ' + (d.unknown || 0) + '\\n\\n' +
+      'LINKS NACIONAIS (até 5):\\n' +
+      ((d.national_links || []).length ? d.national_links.map((u,i) => (i+1)+'. '+u).join('\\n') : 'Nenhum confirmado ainda.') +
+      '\\n\\nLINKS INTERNACIONAIS (até 10):\\n' +
+      ((d.international_links || []).length ? d.international_links.map((u,i) => (i+1)+'. '+u).join('\\n') : 'Nenhum confirmado.') +
+      '\\n\\nLINKS DESCONHECIDOS (até 10):\\n' +
+      ((d.unknown_links || []).length ? d.unknown_links.map((u,i) => (i+1)+'. '+u).join('\\n') : 'Nenhum.') +
+      '\\n\\nErros: ' + (d.errors || []).length +
+      '\\nColeta automática: desligada';
+  });
+});
+
 el('runShopee').addEventListener('click', async () => {
   await postAction('/admin/shopee/collector/run', 'runShopee', 'shopeeResult', 'Consultando Shopee…', d => {
     el('shopeeResult').textContent = 'Teste Shopee concluído.\\nCategorias consultadas: ' + (d.categories_seen || 0) + '\\nProdutos encontrados: ' + (d.items_seen || 0) + '\\nPáginas consultadas para origem: ' + (d.product_pages_checked || 0) + '\\nAnúncios com campo Enviado de encontrado: ' + (d.origin_values_found || 0) + '\\nProdutos sem verificação de origem: ' + (d.products_without_origin_check || 0) + '\\nOrigem nacional confirmada: ' + (d.accepted_national || 0) + '\\nOrigem desconhecida excluída: ' + (d.excluded_unknown_origin || 0) + '\\nAviso de importação internacional encontrado: ' + (d.international_notices_found || 0) + '\\nInternacionais excluídos: ' + (d.excluded_international || 0) + '\\nLinks novos salvos: ' + (d.new_items || 0) + '\\nErros: ' + (d.errors || 0) + '\\nIntervalo: ' + Math.round((d.interval_seconds || 600) / 60) + ' min · Limite: ' + (d.max_new_products || 5) + '\\n' + (d.warning || 'Filtro nacional aplicado.') + '\\nDiagnóstico dos campos da oferta (tipo:valor → quantidade):\\n' + JSON.stringify(d.offer_type_diagnostics || {}, null, 2) + '\\nEvidências reais de exclusão internacional (até 5):\\n' + (d.international_evidence_samples || []).map((x, i) => 'Amostra ' + (i + 1) + ' [' + (x.item_id || 'sem ID') + ']\\nTipo: ' + (x.evidence_type || 'nenhum') + '\\nTrecho: ' + (x.evidence || 'nenhum')).join('\\n\\n') + '\\n\\nLINKS PARA VERIFICAÇÃO MANUAL — ORIGEM DESCONHECIDA (até 10):\\n' + ((d.unknown_origin_links && d.unknown_origin_links.length) ? d.unknown_origin_links.map((url, i) => (i + 1) + '. ' + url).join('\\n') : (d.unknown_origin_samples || []).map((x, i) => (i + 1) + '. ' + (x.title || x.item_id || 'Produto') + '\\n' + (x.permalink || 'Link indisponível')).join('\\n\\n') || 'Nenhum link foi retornado pelo serviço.') + '\\nColeta automática: ' + (d.automatic_collection_enabled ? 'ligada' : 'desligada');
