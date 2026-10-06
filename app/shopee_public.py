@@ -5,6 +5,9 @@ autenticação ou controles de acesso.
 """
 import re
 import unicodedata
+import os
+import subprocess
+import sys
 from urllib.parse import quote
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -82,7 +85,26 @@ async def _page_text(page):
     except Exception:
         return ""
 
+def _ensure_chromium():
+    """Install Chromium on the Render instance only when it is missing."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            executable = pw.chromium.executable_path
+        if os.path.exists(executable):
+            return
+    except Exception:
+        pass
+    subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=180,
+    )
+
 async def collect_public_once(max_products=5, pages_per_category=2):
+    _ensure_chromium()
     discovered, seen = [], set()
     national, international, unknown, errors = [], [], [], []
     pages_checked = 0
