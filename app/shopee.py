@@ -758,6 +758,7 @@ async def collect_once() -> dict:
         "origin_values_found": origin_values_found,
         "international_notices_found": international_notices_found,
         "international_evidence_samples": _evidence_samples,
+        "unknown_origin_samples": _unknown_origin_samples,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "offer_type_diagnostics": offer_type_diagnostics,
