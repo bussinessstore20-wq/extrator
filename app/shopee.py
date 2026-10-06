@@ -733,6 +733,7 @@ async def collect_once() -> dict:
         "international_notices_found": international_notices_found,
         "international_evidence_samples": _evidence_samples,
         "unknown_origin_samples": _unknown_origin_samples,
+        "unknown_origin_links": unknown_origin_links,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "offer_type_diagnostics": offer_type_diagnostics,
@@ -747,6 +748,11 @@ async def collect_once() -> dict:
         "error_count": errors,
         "details": details,
     }).eq("id", run["id"]).execute()
+    unknown_origin_links = [
+        str(sample.get("permalink") or "").strip()
+        for sample in _unknown_origin_samples
+        if str(sample.get("permalink") or "").strip()
+    ][:10]
     return {
         "platform": "shopee",
         "categories_seen": count,
