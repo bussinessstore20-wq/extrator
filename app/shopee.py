@@ -620,6 +620,7 @@ async def collect_once() -> dict:
     # aggregated so the test can reveal whether these fields are strings, lists, or numeric enums.
     offer_type_diagnostics = {"shop_type": {}, "api_origin_fields": {}}
     _evidence_samples = []
+    _unknown_origin_samples = []
     def record_offer_value(field, value):
         if value is None:
             label = "null"
@@ -685,6 +686,12 @@ async def collect_once() -> dict:
                         excluded_international += 1
                     else:
                         excluded_unknown_origin += 1
+                        if len(_unknown_origin_samples) < 10:
+                            _unknown_origin_samples.append({
+                                "item_id": item.get("id"),
+                                "title": str(item.get("title") or "").strip()[:180],
+                                "permalink": str(item.get("permalink") or "").strip(),
+                            })
                     continue
                 accepted_national += 1
                 try:
@@ -725,6 +732,7 @@ async def collect_once() -> dict:
         "origin_values_found": origin_values_found,
         "international_notices_found": international_notices_found,
         "international_evidence_samples": _evidence_samples,
+        "unknown_origin_samples": _unknown_origin_samples,
         "products_without_origin_check": max(0, seen - origin_checks),
         "origin_source": "public_shopee_product_detail",
         "offer_type_diagnostics": offer_type_diagnostics,
