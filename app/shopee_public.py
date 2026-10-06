@@ -52,31 +52,51 @@ def classify(text):
 async def _collect_links(page, keyword, limit=30):
     url = "https://shopee.com.br/search?keyword=" + quote(keyword)
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(3500)
-    # Give the client-side result list time to render.
-    for selector in ('a[href*="-i."]', 'a[href*="i."]'):
-        try:
-            await page.locator(selector).first.wait_for(timeout=7000)
-            break
-        except Exception:
-            pass
-    links = await page.locator('a[href*="-i."]').evaluate_all(
+    await page.wait_for_timeout(4500)
+
+    # A Shopee result can be rendered without the old "-i." CSS selector.
+    # Read all public anchors and identify canonical product URLs by pattern.
+    anchors = await page.locator("a").evaluate_all(
         """els => els.map(a => ({
-            href: a.href,
+            href: a.href || a.getAttribute('href') || '',
             text: (a.innerText || a.textContent || '').trim()
         }))"""
     )
     out, seen = [], set()
-    for item in links:
+    pattern = re.compile(r"https://shopee\\.com\\.br/.+?-i\\.\\d+\\.\\d+", re.I)
+    for item in anchors:
         href = str(item.get("href") or "").split("?")[0]
-        if not href.startswith("https://shopee.com.br/") or "-i." not in href:
-            continue
-        if href in seen:
+        match = pattern.match(href)
+        if not match or href in seen:
             continue
         seen.add(href)
-        out.append({"url": href, "title": str(item.get("text") or "").strip()[:180]})
+        out.append({
+            "url": href,
+            "title": str(item.get("text") or "").strip()[:180],
+        })
         if len(out) >= limit:
             break
+
+    # If links are present only after more scrolling, load a small amount
+    # of additional public results, still without login or bypassing controls.
+    if not out:
+        for _ in range(3):
+            await page.mouse.wheel(0, 1800)
+            await page.wait_for_timeout(1200)
+        anchors = await page.locator("a").evaluate_all(
+            """els => els.map(a => ({
+                href: a.href || a.getAttribute('href') || '',
+                text: (a.innerText || a.textContent || '').trim()
+            }))"""
+        )
+        for item in anchors:
+            href = str(item.get("href") or "").split("?")[0]
+            if not pattern.match(href) or href in seen:
+                continue
+            seen.add(href)
+            out.append({"url": href, "title": str(item.get("text") or "").strip()[:180]})
+            if len(out) >= limit:
+                break
     return out
 
 async def _page_text(page):
