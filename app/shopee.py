@@ -719,6 +719,11 @@ async def collect_once() -> dict:
     })
     db.table("extrator_settings").upsert({"key": "shopee_collector", "value": settings}).execute()
     status = "partial" if errors else "completed"  # zero accepted products is still a completed run; explain zero results in details
+    unknown_origin_links = [
+        str(sample.get("permalink") or "").strip()
+        for sample in _unknown_origin_samples
+        if str(sample.get("permalink") or "").strip()
+    ][:10]
     details = {
         "platform": "shopee",
         "next_category_cursor": next_cursor,
@@ -748,11 +753,6 @@ async def collect_once() -> dict:
         "error_count": errors,
         "details": details,
     }).eq("id", run["id"]).execute()
-    unknown_origin_links = [
-        str(sample.get("permalink") or "").strip()
-        for sample in _unknown_origin_samples
-        if str(sample.get("permalink") or "").strip()
-    ][:10]
     return {
         "platform": "shopee",
         "categories_seen": count,
