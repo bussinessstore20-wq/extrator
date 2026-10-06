@@ -174,88 +174,61 @@ async def telegram_webhook(request: Request):
 
 @app.get("/status")
 async def status():
-    # Cada integração é testada de verdade. "configured" sozinho não significa
-    # que a credencial está válida ou que o serviço remoto está acessível.
-    supabase_connection = "not_configured"
-    supabase_error = None
-    if config.supabase_ready():
-        try:
-            get_db().table("extrator_settings").select("key").limit(1).execute()
-            supabase_connection = "ok"
-        except Exception as exc:
-            supabase_connection = "error"
-            supabase_error = f"{type(exc).__name__}: {str(exc)[:250]}"
-            logger.exception("Teste de conexão com Supabase falhou")
-
-    telegram_connection = "not_configured"
-    telegram_error = None
-    telegram_webhook = None
-    if config.TELEGRAM_BOT_TOKEN:
-        try:
-            if runtime.get("bot"):
-                me = await runtime["bot"].bot.get_me()
-                telegram_webhook = await runtime["bot"].bot.get_webhook_info()
-                telegram_connection = "ok"
-                telegram_bot_username = me.username
-            else:
-                telegram_bot_username = None
-                telegram_connection = "error"
-                telegram_error = "O bot não foi inicializado. Verifique TELEGRAM_BOT_TOKEN e TELEGRAM_ADMIN_IDS."
-        except Exception as exc:
-            telegram_bot_username = None
-            telegram_connection = "error"
-            telegram_error = f"{type(exc).__name__}: {str(exc)[:250]}"
-            logger.exception("Teste de conexão com Telegram falhou")
-    else:
-        telegram_bot_username = None
-
-    shopee_connection = "not_configured"
-    shopee_error = None
-    shopee_schema = None
-    if shopee_ready():
-        try:
-            shopee_schema = await inspect_affiliate_schema()
-            if shopee_schema.get("ok") is False:
-                raise RuntimeError(str(shopee_schema.get("error") or "A API Shopee não respondeu corretamente."))
-            shopee_connection = "ok"
-        except Exception as exc:
-            shopee_connection = "error"
-            shopee_error = f"{type(exc).__name__}: {str(exc)[:250]}"
-            logger.exception("Teste de conexão com Shopee falhou")
-
-    return {
-        "app": "extrator",
-        "service": "online",
-        "supabase_configured": config.supabase_ready(),
-        "supabase_connection": supabase_connection,
-        "supabase_error": supabase_error,
-        "telegram_configured": config.telegram_ready(),
-        "telegram_connection": telegram_connection,
-        "telegram_error": telegram_error,
-        "telegram_bot_username": telegram_bot_username,
-        "telegram_webhook": (
-            {
-                "url_configured": bool(getattr(telegram_webhook, "url", None)),
-                "pending_update_count": getattr(telegram_webhook, "pending_update_count", None),
-                "last_error_message": getattr(telegram_webhook, "last_error_message", None),
-            }
-            if telegram_webhook else None
-        ),
-        "mercadolivre_app_configured": config.mercadolivre_ready(),
-        "shopee_app_configured": shopee_ready(),
-        "shopee_connection": shopee_connection,
-        "shopee_error": shopee_error,
-        "shopee_schema": shopee_schema,
-        "shopee_collector_enabled": config.SHOPEE_COLLECTOR_ENABLED,
+    result = {
+        "app": "extrator", "service": "online",
+        "supabase_configured": bool(config.supabase_ready()),
+        "supabase_connection": "not_configured", "supabase_error": None,
+        "telegram_configured": bool(config.telegram_ready()),
+        "telegram_connection": "not_configured", "telegram_error": None,
+        "telegram_bot_username": None, "telegram_webhook": None,
+        "mercadolivre_app_configured": bool(config.mercadolivre_ready()),
+        "shopee_app_configured": bool(shopee_ready()),
+        "shopee_connection": "not_configured", "shopee_error": None, "shopee_schema": None,
+        "shopee_collector_enabled": bool(config.SHOPEE_COLLECTOR_ENABLED),
         "shopee_collector_interval_seconds": config.SHOPEE_COLLECTOR_INTERVAL_SECONDS,
         "shopee_max_items_per_cycle": config.SHOPEE_MAX_ITEMS_PER_CYCLE,
         "shopee_collector_paused": runtime["shopee_collector_paused"],
         "shopee_last_collection": runtime["shopee_last_collection"],
         "shopee_last_error": runtime["shopee_last_error"],
-        "collector_enabled": config.COLLECTOR_ENABLED,
-        "last_collection": runtime["last_collection"],
-        "last_error": runtime["last_error"],
+        "collector_enabled": bool(config.COLLECTOR_ENABLED),
+        "last_collection": runtime["last_collection"], "last_error": runtime["last_error"],
     }
+    if config.supabase_ready():
+        try:
+            await asyncio.to_thread(lambda: get_db().table("extrator_settings").select("key").limit(1).execute())
+            result["supabase_connection"] = "ok"
+        except Exception as exc:
+            result["supabase_connection"] = "error"
+            result["supabase_error"] = f"{type(exc).__name__}: {str(exc)[:250]}"
+            logger.exception("Teste de conexão com Supabase falhou")
+    if config.TELEGRAM_BOT_TOKEN:
+        try:
+            bot = runtime.get("bot")
+            if not bot:
+                raise RuntimeError("Bot Telegram não foi inicializado. Verifique TELEGRAM_BOT_TOKEN e TELEGRAM_ADMIN_IDS.")
+            me = await asyncio.wait_for(bot.bot.get_me(), timeout=8)
+            webhook = await asyncio.wait_for(bot.bot.get_webhook_info(), timeout=8)
+            result["telegram_connection"] = "ok"
+            result["telegram_bot_username"] = me.username
+            result["telegram_webhook"] = {
+                "url_configured": bool(getattr(webhook, "url", None)),
+                "pending_update_count": getattr(webhook, "pending_update_count", None),
+                "last_error_message": getattr(webhook, "last_error_message", None),
+            }
+        except Exception as exc:
+            result["telegram_connection"] = "error"
+            result["telegram_error"] = f"{type(exc).__name__}: {str(exc)[:250]}"
+    if shopee_ready():
+        try:
+            schema = await asyncio.wait_for(inspect_affiliate_schema(), timeout=12)
+            result["shopee_schema"] = schema
+            if isinstance(schema, dict) and schema.get("ok") is False:
+                raise RuntimeError(str(schema.get("error") or "A API Shopee não respondeu corretamente."))
+            result["shopee_connection"] = "ok"
+        except Exception as exc:
+            result["shopee_connection"] = "error"
+            result["shopee_error"] = f"{type(exc).__name__}: {str(exc)[:250]}"
+    return result
 
 @app.get("/oauth/mercadolivre/start")
 async def oauth_start():
