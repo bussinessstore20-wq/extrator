@@ -1,21 +1,16 @@
-"""Coleta pública da Shopee via navegador, sem usar a API de afiliados.
+"""Descoberta pública de produtos Shopee sem API de afiliados e sem login.
 
-Usa páginas públicas e apenas sinais visíveis no produto. Não faz login nem tenta
-contornar CAPTCHA, autenticação ou controles de acesso.
+A fonte é exclusivamente a página pública de busca/produto. Nenhum endpoint
+privado, login, CAPTCHA ou mecanismo de acesso é contornado.
 """
-import asyncio
+import html
 import re
-from urllib.parse import quote, urlparse
+import unicodedata
+from urllib.parse import quote
 
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+import httpx
 
-CATEGORIES = [
-    "eletronicos",
-    "casa",
-    "beleza",
-    "moda",
-    "acessorios",
-]
+CATEGORIES = ["eletronicos", "casa", "beleza", "moda", "acessorios"]
 
 BRAZIL = (
     "acre","alagoas","amapa","amazonas","bahia","ceara","distrito federal",
@@ -23,144 +18,124 @@ BRAZIL = (
     "minas gerais","para","paraiba","parana","pernambuco","piaui",
     "rio de janeiro","rio grande do norte","rio grande do sul","rondonia",
     "roraima","santa catarina","sao paulo","sergipe","tocantins",
-    "brasil","são paulo","rio de janeiro","recife","fortaleza","salvador",
-    "belo horizonte","curitiba","porto alegre","campinas","guarulhos",
+    "brasil","recife","fortaleza","salvador","belo horizonte","curitiba",
+    "porto alegre","campinas","guarulhos",
 )
 
 FOREIGN = (
-    "produto internacional objeto de declaração de importação",
+    "produto internacional objeto de declaracao de importacao",
     "sujeito a impostos estaduais e federais",
     "enviado de exterior",
     "shipping from exterior",
-    "china","hong kong","coreia","japão","japao","vietnã","vietna",
-    "importado do",
+    "china","hong kong","coreia","japao","vietna","importado do",
 )
 
 def _norm(text):
-    import unicodedata
     text = unicodedata.normalize("NFKD", text or "")
     text = "".join(c for c in text if not unicodedata.combining(c))
     return re.sub(r"\s+", " ", text).strip().lower()
 
 def classify(text):
     n = _norm(text)
-    foreign_hit = next((x for x in FOREIGN if _norm(x) in n), None)
-    if foreign_hit:
-        return "international", foreign_hit
-    # Prefer the explicit dispatch label over generic mentions of Brazil.
-    m = re.search(r"(?:enviado de|shipping from)\s*[:\-]?\s*([^|\n]{2,80})", n)
+    foreign = next((x for x in FOREIGN if _norm(x) in n), None)
+    if foreign:
+        return "international", foreign
+    # We only accept a Brazilian location when it follows an explicit
+    # shipping-origin label; generic mentions of Brazil are not enough.
+    m = re.search(r"(?:enviado\s+de|shipping\s+from)\s*[:\-]?\s*([^|\n<]{2,80})", n)
     if m:
         origin = m.group(1).strip()
         if any(_norm(x) in origin for x in BRAZIL):
             return "national", origin
     return "unknown", None
 
-async def _text(page):
-    try:
-        return await page.locator("body").inner_text(timeout=6000)
-    except Exception:
-        return ""
-
-async def _collect_links(page, keyword, limit=20):
-    url = "https://shopee.com.br/search?keyword=" + quote(keyword)
-    await page.goto(url, wait_until="domcontentloaded", timeout=25000)
-    await page.wait_for_timeout(2500)
-    links = await page.locator('a[href*="-i."]').evaluate_all(
-        """els => els.map(a => ({href:a.href, text:(a.innerText||a.textContent||"").trim()}))"""
+def _product_links(page_html):
+    decoded = html.unescape(page_html or "")
+    # Search result pages expose product URLs in anchors and sometimes in
+    # escaped JSON. Keep only public Shopee Brazil product paths.
+    candidates = re.findall(
+        r'(?:href=|\\?"url\\?":\\?")\\?["\']?(https?://(?:www\.)?shopee\.com\.br/[^"\'<>\\\s]+|/[^"\'<>\\\s]*-i\.\d+\.\d+[^"\'<>\\\s]*)',
+        decoded,
+        flags=re.IGNORECASE,
     )
-    out = []
-    seen = set()
-    for item in links:
-        href = str(item.get("href") or "").split("?")[0]
-        if not href.startswith("https://shopee.com.br/") or "-i." not in href:
+    out, seen = [], set()
+    for raw in candidates:
+        url = raw
+        if url.startswith("/"):
+            url = "https://shopee.com.br" + url
+        url = url.replace("\\/", "/").split("?")[0]
+        if "-i." not in url or not url.startswith("https://shopee.com.br/"):
             continue
-        if href in seen:
+        if url in seen:
             continue
-        seen.add(href)
-        out.append({"url": href, "title": str(item.get("text") or "").strip()[:180]})
-        if len(out) >= limit:
-            break
+        seen.add(url)
+        out.append(url)
     return out
 
+def _title(page_html):
+    m = re.search(r"<title[^>]*>(.*?)</title>", page_html or "", flags=re.I|re.S)
+    return re.sub(r"\s+", " ", html.unescape(re.sub("<[^>]+>", " ", m.group(1)))).strip()[:180] if m else "Produto Shopee"
+
 async def collect_public_once(max_products=5, pages_per_category=2):
-    """Discover public product URLs and classify visible shipping evidence.
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    discovered, seen = [], set()
+    national, international, unknown, errors = [], [], [], []
+    pages_checked = 0
 
-    The test intentionally does not save or publish anything. Automatic collection
-    remains controlled by the existing application flag.
-    """
-    categories_checked = 0
-    discovered = []
-    page_checks = 0
-    national = []
-    international = []
-    unknown = []
-    errors = []
+    async with httpx.AsyncClient(timeout=httpx.Timeout(20, connect=8), follow_redirects=True, headers=headers) as client:
+        for category in CATEGORIES:
+            if len(discovered) >= max_products * 10:
+                break
+            try:
+                search_url = "https://shopee.com.br/search?keyword=" + quote(category)
+                response = await client.get(search_url)
+                if response.status_code >= 400:
+                    errors.append({"category": category, "error": f"busca HTTP {response.status_code}"})
+                    continue
+                for url in _product_links(response.text):
+                    if url not in seen:
+                        seen.add(url)
+                        discovered.append({"url": url, "title": ""})
+                    if len(discovered) >= max_products * 10:
+                        break
+            except httpx.HTTPError as exc:
+                errors.append({"category": category, "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = await browser.new_context(
-            locale="pt-BR",
-            timezone_id="America/Sao_Paulo",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/126.0.0.0 Safari/537.36"
-            ),
-        )
-        page = await context.new_page()
-        try:
-            for category in CATEGORIES:
-                if len(discovered) >= max_products * 8:
-                    break
-                categories_checked += 1
-                try:
-                    items = await _collect_links(page, category, limit=20)
-                    for item in items:
-                        if item["url"] not in {x["url"] for x in discovered}:
-                            discovered.append(item)
-                except PlaywrightTimeoutError:
-                    errors.append({"category": category, "error": "tempo esgotado ao abrir busca pública"})
-                except Exception as exc:
-                    errors.append({"category": category, "error": f"{type(exc).__name__}: {str(exc)[:180]}"})
-
-            # Inspect a bounded sample so the manual test stays controlled.
-            for item in discovered[: max_products * 8]:
-                if len(national) >= max_products:
-                    break
-                try:
-                    await page.goto(item["url"], wait_until="domcontentloaded", timeout=20000)
-                    await page.wait_for_timeout(1200)
-                    body = await _text(page)
-                    page_checks += 1
-                    classification, evidence = classify(body)
-                    result = {
-                        "title": item["title"] or "Produto Shopee",
-                        "permalink": item["url"],
-                        "classification": classification,
-                        "evidence": evidence,
-                    }
-                    if classification == "national":
-                        national.append(result)
-                    elif classification == "international":
-                        international.append(result)
-                    else:
-                        unknown.append(result)
-                except PlaywrightTimeoutError:
-                    errors.append({"url": item["url"], "error": "tempo esgotado ao abrir produto"})
-                except Exception as exc:
-                    errors.append({"url": item["url"], "error": f"{type(exc).__name__}: {str(exc)[:180]}"})
-        finally:
-            await context.close()
-            await browser.close()
+        for item in discovered:
+            if len(national) >= max_products:
+                break
+            try:
+                response = await client.get(item["url"])
+                pages_checked += 1
+                if response.status_code >= 400:
+                    errors.append({"url": item["url"], "error": f"produto HTTP {response.status_code}"})
+                    continue
+                body = response.text
+                classification, evidence = classify(body)
+                result = {
+                    "title": _title(body),
+                    "permalink": item["url"],
+                    "classification": classification,
+                    "evidence": evidence,
+                }
+                if classification == "national":
+                    national.append(result)
+                elif classification == "international":
+                    international.append(result)
+                else:
+                    unknown.append(result)
+            except httpx.HTTPError as exc:
+                errors.append({"url": item["url"], "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
 
     return {
-        "source": "public_browser",
-        "categories_checked": categories_checked,
+        "source": "public_http",
+        "categories_checked": len(CATEGORIES),
         "products_discovered": len(discovered),
-        "product_pages_checked": page_checks,
+        "product_pages_checked": pages_checked,
         "national_confirmed": len(national),
         "international_confirmed": len(international),
         "unknown": len(unknown),
