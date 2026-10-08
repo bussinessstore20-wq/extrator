@@ -129,7 +129,15 @@ def _slug_title(url):
 
 async def _inspect_product(page, product):
     await page.goto(product["permalink"], wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(3000)
+    await page.wait_for_timeout(5000)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=12000)
+    except Exception:
+        pass
+    try:
+        await page.locator("body").wait_for(timeout=5000)
+    except Exception:
+        pass
 
     meta = await page.locator('meta').evaluate_all(
         """els => els.map(x => ({
@@ -142,6 +150,7 @@ async def _inspect_product(page, product):
     json_scripts = await page.locator('script').all_text_contents()
     body_text = _clean(await page.locator("body").inner_text(timeout=10000))
     html = await page.content()
+    image_urls = await page.locator("img").evaluate_all("""els => els.map(x => x.currentSrc || x.src || x.getAttribute("data-src") || "").filter(Boolean)""")
 
     meta_map = {}
     for item in meta:
@@ -169,10 +178,16 @@ async def _inspect_product(page, product):
         image = embedded.get("image") or meta_map.get("og:image")
     if image and "logo" in str(image).lower():
         image = None
+    if not image:
+        image = next((u for u in image_urls if "logo" not in u.lower() and "natura" in u.lower()), None)
+    if not image:
+        image = next((u for u in image_urls if "logo" not in u.lower()), None)
 
     price = _format_price(embedded.get("price")) or _format_price(structured.get("price"))
     old_price = _format_price(embedded.get("old_price"))
     all_prices = re.findall(r"R\\$\\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\\n" + html, re.I)
+    if not all_prices:
+        all_prices = re.findall(r"(?:price|preco|preço|sellingPrice|salePrice|currentPrice)[^0-9]{0,80}([0-9]+(?:[.,][0-9]{1,2}))", html, re.I)
     unique_prices = []
     for value in all_prices:
         value = _clean(value)
