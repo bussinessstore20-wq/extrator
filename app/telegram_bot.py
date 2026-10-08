@@ -56,6 +56,77 @@ async def send_pending_products(app: Application, limit: int = 10) -> int:
 def escape_html(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
+
+async def send_natura_collection_to_channel(app: Application, result: dict) -> int:
+    """Envia imediatamente para o canal configurado os produtos obtidos na coleta pública da Natura."""
+    if not config.telegram_ready() or not config.TELEGRAM_CHANNEL_ID:
+        log.warning("Coleta Natura concluída, mas o Telegram/canal não está configurado.")
+        return 0
+
+    products = result.get("products") or []
+    if not products:
+        await app.bot.send_message(
+            chat_id=config.TELEGRAM_CHANNEL_ID,
+            text="🌿 <b>Coleta Natura</b>\\n\\nNenhum produto encontrado nesta coleta.",
+            parse_mode="HTML",
+        )
+        return 0
+
+    sent = 0
+    for product in products:
+        title = escape_html(str(product.get("title") or "Produto Natura"))
+        price = escape_html(str(product.get("price") or "Preço não identificado"))
+        old_price = escape_html(str(product.get("old_price") or "Preço anterior não identificado"))
+        discount = escape_html(str(product.get("discount") or "Desconto não identificado"))
+        availability = escape_html(str(product.get("availability") or "Disponibilidade não identificada"))
+        permalink = str(product.get("permalink") or "").strip()
+        image = str(product.get("image") or "").strip()
+
+        lines = [
+            "🌿 <b>OFERTA NATURA</b>",
+            "",
+            f"✨ <b>{title}</b>",
+            "",
+            f"💰 <b>Por: {price}</b>",
+            f"🏷️ De: {old_price}",
+            f"📉 Desconto: {discount}",
+            f"📦 Disponibilidade: {availability}",
+            "",
+            f"🔗 <a href=\"{escape_html(permalink)}\">Comprar na Natura</a>" if permalink else "🔗 Link não identificado",
+        ]
+        caption = "\\n".join(lines)
+
+        try:
+            if image:
+                await app.bot.send_photo(
+                    chat_id=config.TELEGRAM_CHANNEL_ID,
+                    photo=image,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+            else:
+                await app.bot.send_message(
+                    chat_id=config.TELEGRAM_CHANNEL_ID,
+                    text=caption,
+                    parse_mode="HTML",
+                    disable_web_page_preview=False,
+                )
+            sent += 1
+        except Exception as exc:
+            log.warning("Falha ao enviar imagem da Natura para o canal: %s", exc)
+            try:
+                await app.bot.send_message(
+                    chat_id=config.TELEGRAM_CHANNEL_ID,
+                    text=caption,
+                    parse_mode="HTML",
+                    disable_web_page_preview=False,
+                )
+                sent += 1
+            except Exception:
+                log.exception("Falha definitiva ao enviar produto Natura para o canal.")
+
+    return sent
+
 async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
