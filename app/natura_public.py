@@ -105,10 +105,22 @@ def _extract_embedded_product(raw_items, product_code):
             value = item.get(key)
             if isinstance(value, str) and "logo" not in value.lower():
                 result.setdefault("image", value)
-        for key in ("availability", "stockStatus", "inventoryStatus"):
+        for key in (
+            "availability", "stockStatus", "inventoryStatus", "availabilityStatus",
+            "status", "sellingStatus"
+        ):
             value = item.get(key)
-            if isinstance(value, str):
+            if isinstance(value, (str, bool, int, float)):
                 result.setdefault("availability", _clean(value))
+        for key in (
+            "available", "inStock", "isAvailable", "isInStock",
+            "stock", "stockQuantity", "quantityAvailable"
+        ):
+            value = item.get(key)
+            if isinstance(value, bool):
+                result.setdefault("availability", "Disponível" if value else "Indisponível")
+            elif isinstance(value, (int, float)) and key != "stock":
+                result.setdefault("availability", "Disponível" if value > 0 else "Indisponível")
     return result
 
 
@@ -182,28 +194,66 @@ async def _inspect_product(page, product):
         title = _slug_title(product["permalink"])
 
     candidates = []
+    def useful_image(url):
+        value = _clean(url)
+        low = value.lower()
+        if not value:
+            return False
+        blocked = (
+            "elo.svg", "brand.png", "logo", "favicon", "/commons/",
+            "/social/", "sprite", "placeholder", "default-image"
+        )
+        return not any(token in low for token in blocked)
+
     for value in (
         embedded.get("image"),
         structured.get("image") if isinstance(structured.get("image"), str) else None,
         meta_map.get("og:image"),
     ):
-        if value and "logo" not in str(value).lower():
+        if useful_image(value):
             candidates.append(value)
+
+    ranked_images = []
     for item in image_urls:
         src = item["src"]
-        if "logo" not in src.lower() and "brand.png" not in src.lower():
-            candidates.append(src)
+        if not useful_image(src):
+            continue
+        score = 0
+        if item.get("width", 0) >= 300 and item.get("height", 0) >= 300:
+            score += 5
+        if product_code.lower() in src.lower():
+            score += 4
+        if "/p/" in src.lower() or "/produto" in src.lower():
+            score += 2
+        if "natura" in src.lower():
+            score += 1
+        ranked_images.append((score, src))
+    ranked_images.sort(reverse=True)
+    candidates.extend(src for _, src in ranked_images)
     image = next(iter(dict.fromkeys(candidates)), None)
 
     price = _format_price(embedded.get("price")) or _format_price(structured.get("price"))
     old_price = _format_price(embedded.get("old_price"))
 
-    raw_price_matches = re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\n" + html, re.I)
-    raw_price_matches = list(dict.fromkeys(raw_price_matches))
-    if not price and raw_price_matches:
-        price = raw_price_matches[-1]
-    if not old_price and len(raw_price_matches) >= 2:
-        old_price = raw_price_matches[0] if raw_price_matches[0] != price else None
+    raw_price_matches = list(dict.from_keys(
+        re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\n" + html, re.I)
+    ))
+
+    # Usa preço visível somente como fallback do preço atual.
+    # Não transforma outro valor da página em preço anterior sem evidência estruturada.
+    if not price:
+        preferred_nodes = [
+            x for x in price_nodes
+            if any(token in (x.get("cls", "") + " " + x.get("testid", "") + " " + x.get("aria", "")).lower()
+                   for token in ("price", "preco", "preço", "valor", "offer", "sale"))
+        ]
+        node_prices = []
+        for node in preferred_nodes:
+            node_prices.extend(re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", node.get("text", ""), re.I))
+        if node_prices:
+            price = node_prices[-1]
+        elif raw_price_matches:
+            price = raw_price_matches[-1]
 
     availability = embedded.get("availability") or structured.get("availability")
     if not availability:
@@ -262,7 +312,7 @@ async def _inspect_product(page, product):
         "availability": availability,
         "details_verified": True,
         "debug_price_nodes": price_nodes[:10],
-        "debug_images": image_urls[:15],
+        "debug_images": [{"score": score, "src": src} for score, src in ranked_images[:15]],
         "debug_snippets": debug_snippets[:10],
         "debug_product_scripts": debug_scripts,
     })
