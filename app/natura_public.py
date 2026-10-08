@@ -427,7 +427,7 @@ async def _inspect_product(page, product):
 
     # Fallback: a loja personalizada pode não expor os dados comerciais no DOM.
     # Consulta a página oficial do mesmo SKU, sem alterar o link publicado.
-    if not price and official_url != original_url:
+    if official_url != original_url:
         try:
             await page.goto(official_url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3500)
