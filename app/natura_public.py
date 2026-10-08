@@ -77,6 +77,62 @@ def _walk_json(value, product_code, hits):
             _walk_json(child, product_code, hits)
 
 
+def _extract_next_payload_product(scripts, product_code):
+    """Extrai objetos de produto dos payloads self.__next_f sem depender do DOM."""
+    code = product_code.lower()
+    candidates = []
+    for raw in scripts:
+        low = raw.lower()
+        if code not in low:
+            continue
+        # O payload é serializado/escapado; procuramos janelas próximas ao SKU.
+        idx = 0
+        while True:
+            idx = low.find(code, idx)
+            if idx < 0:
+                break
+            window = raw[max(0, idx - 12000): idx + 20000]
+            candidates.append(window)
+            idx += len(code)
+
+    result = {}
+    for raw in candidates:
+        decoded = raw.replace('\\\"', '"').replace('\\u0026', '&').replace('\\/', '/')
+        pairs = [
+            ("image", r'"(?:image|imageUrl|imageURL|url|src)"\s*:\s*"([^"]+)"'),
+            ("price", r'"(?:price|salePrice|sellingPrice|currentPrice|promotionalPrice)"\s*:\s*"?([0-9]+(?:[.,][0-9]{1,2})?)"?'),
+            ("old_price", r'"(?:listPrice|originalPrice|regularPrice|fullPrice|oldPrice)"\s*:\s*"?([0-9]+(?:[.,][0-9]{1,2})?)"?'),
+            ("availability", r'"(?:availability|stockStatus|inventoryStatus|availabilityStatus)"\s*:\s*"([^"]+)"'),
+            ("name", r'"(?:name|productName|displayName|title)"\s*:\s*"([^"]+)"')
+        ]
+        for key, pattern in pairs:
+            if result.get(key):
+                continue
+            m = re.search(pattern, decoded, re.I)
+            if m:
+                value = _clean(m.group(1))
+                if key == "image":
+                    if useful_natura_image(value):
+                        result[key] = value
+                else:
+                    result[key] = value
+    return result
+
+
+def useful_natura_image(url):
+    value = _clean(url)
+    low = value.lower()
+    if not value:
+        return False
+    blocked = (
+        "elo.svg", "brand.png", "logo", "favicon", "/commons/",
+        "/social/", "sprite", "placeholder", "default-image",
+        "visa.", "pix.", "mastercard.", "hipercard.", "amex.",
+        "boleto.", "dinners-club.", "bcorp."
+    )
+    return not any(token in low for token in blocked)
+
+
 def _extract_embedded_product(raw_items, product_code):
     hits = []
     for raw in raw_items:
@@ -182,7 +238,7 @@ async def _inspect_product(page, product):
 
     product_code = product["permalink"].rstrip("/").rsplit("/", 1)[-1]
     structured = _extract_product_jsonld(jsonlds)
-    embedded = _extract_embedded_product(scripts, product_code)
+    embedded = _extract_embedded_product(scripts, product_code)\n    next_payload = _extract_next_payload_product(scripts, product_code)
 
     title = (
         structured.get("name")
@@ -206,7 +262,7 @@ async def _inspect_product(page, product):
         return not any(token in low for token in blocked)
 
     for value in (
-        embedded.get("image"),
+        next_payload.get("image"),\n        embedded.get("image"),
         structured.get("image") if isinstance(structured.get("image"), str) else None,
         meta_map.get("og:image"),
     ):
@@ -232,8 +288,8 @@ async def _inspect_product(page, product):
     candidates.extend(src for _, src in ranked_images)
     image = next(iter(dict.fromkeys(candidates)), None)
 
-    price = _format_price(embedded.get("price")) or _format_price(structured.get("price"))
-    old_price = _format_price(embedded.get("old_price"))
+    price = _format_price(next_payload.get("price")) or _format_price(embedded.get("price")) or _format_price(structured.get("price"))
+    old_price = _format_price(next_payload.get("old_price")) or _format_price(embedded.get("old_price"))
 
     raw_price_matches = list(dict.fromkeys(
         re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\n" + html, re.I)
@@ -255,7 +311,7 @@ async def _inspect_product(page, product):
         elif raw_price_matches:
             price = raw_price_matches[-1]
 
-    availability = embedded.get("availability") or structured.get("availability")
+    availability = next_payload.get("availability") or embedded.get("availability") or structured.get("availability")
     if not availability:
         low = body_text.lower()
         for word in ("disponível", "indisponível", "esgotado", "sem estoque"):
