@@ -9,6 +9,7 @@ from app.db import get_db, log_event
 from app.mercadolivre import collect_once
 from app.shopee import collect_once as collect_shopee_once, shopee_ready, inspect_affiliate_schema
 from app.shopee_public import collect_public_once
+from app.natura_public import collect_natura_public_once
 from telegram import Update
 from app.telegram_bot import start_bot, send_pending_products, telegram_webhook_secret
 
@@ -393,6 +394,19 @@ async def shopee_public_test(x_admin_secret: str | None = Header(default=None)):
         raise HTTPException(502, f"Coleta pública Shopee falhou: {str(exc)[:450]}") from exc
 
 
+
+
+@app.post("/admin/natura/public-test")
+async def natura_public_test(x_admin_secret: str | None = Header(default=None)):
+    if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
+        raise HTTPException(403, "Não autorizado.")
+    try:
+        return await collect_natura_public_once(max_products=10)
+    except Exception as exc:
+        logger.exception("Falha no teste público da Natura")
+        raise HTTPException(502, f"Teste público Natura falhou: {str(exc)[:450]}") from exc
+
+
 @app.get('/admin/collector', response_class=HTMLResponse)
 async def collector_dashboard():
     return HTMLResponse(r"""<!doctype html>
@@ -503,6 +517,7 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
       <p class="sub">A coleta automática permanece desligada. O teste manual não a ativa.</p>
       <button id="runShopee" class="btn primary">▶ Testar coleta Shopee</button>
       <button id="runShopeePublic" class="btn secondary">🌐 Testar coleta pública (navegador)</button>
+      <button id="runNatura" class="btn secondary">🌿 Testar Natura</button>
       <button id="pauseButton" class="btn orange">⏸ Pausar Shopee</button>
     </div>
     <div class="notice"><strong>Filtro de origem nacional ativo</strong>Produtos sem informação confiável de envio nacional são excluídos. Não serão enviados links de origem desconhecida.</div>
@@ -608,6 +623,21 @@ el('runShopeePublic').addEventListener('click', async () => {
       ((d.international_links || []).length ? d.international_links.map((u,i) => (i+1)+'. '+u).join('\\n') : 'Nenhum confirmado.') +
       '\\n\\nLINKS DESCONHECIDOS (até 10):\\n' +
       ((d.unknown_links || []).length ? d.unknown_links.map((u,i) => (i+1)+'. '+u).join('\\n') : 'Nenhum.') +
+      '\\n\\nErros: ' + (d.errors || []).length +
+      '\\nColeta automática: desligada';
+  });
+});
+
+
+el('runNatura').addEventListener('click', async () => {
+  await postAction('/admin/natura/public-test', 'runNatura', 'shopeeResult', 'Abrindo Natura…', d => {
+    el('shopeeResult').textContent =
+      'Teste público Natura concluído.\\n' +
+      'Produtos encontrados: ' + (d.products_discovered || 0) + '\\n\\n' +
+      'LINKS DOS PRODUTOS (até 10):\\n' +
+      ((d.products || []).length
+        ? d.products.map((x,i) => (i+1)+'. ' + (x.title || 'Produto Natura') + '\\n' + x.permalink).join('\\n\\n')
+        : 'Nenhum produto encontrado.') +
       '\\n\\nErros: ' + (d.errors || []).length +
       '\\nColeta automática: desligada';
   });
