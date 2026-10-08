@@ -187,7 +187,9 @@ def _slug_title(url):
 
 
 async def _inspect_product(page, product):
-    await page.goto(product["permalink"], wait_until="domcontentloaded", timeout=30000)
+    original_url = product["permalink"]
+    official_url = original_url.replace("https://www.minhaloja.natura.com/", "https://www.natura.com.br/", 1)
+    await page.goto(original_url, wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_timeout(5000)
     try:
         await page.wait_for_load_state("networkidle", timeout=12000)
@@ -423,6 +425,64 @@ async def _inspect_product(page, product):
             if len(debug_scripts) >= 5:
                 break
 
+    # Fallback: a loja personalizada pode não expor os dados comerciais no DOM.
+    # Consulta a página oficial do mesmo SKU, sem alterar o link publicado.
+    if not price and official_url != original_url:
+        try:
+            await page.goto(official_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3500)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            official_body = _clean(await page.locator("body").inner_text(timeout=10000))
+            official_nodes = await page.locator("body *").evaluate_all(
+                """els => els.map(e => ({text: (e.innerText || e.textContent || '').trim(), cls: typeof e.className === 'string' ? e.className : '', aria: e.getAttribute('aria-label') || '', testid: e.getAttribute('data-testid') || ''})).filter(x => /R\\$\\s*\\d/.test(x.text) && x.text.length <= 500).slice(0, 80)"""
+            )
+            official_prices = []
+            for node in official_nodes:
+                text = _clean(node.get("text", ""))
+                matches = re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", text, re.I)
+                if matches:
+                    label = _clean(node.get("cls", "") + " " + node.get("testid", "") + " " + node.get("aria", "")).lower()
+                    score = 0
+                    if any(k in label for k in ("price", "preco", "preço", "sale", "offer", "valor")):
+                        score += 5
+                    if len(matches) <= 2:
+                        score += 1
+                    official_prices.append((score, matches, text))
+            official_prices.sort(key=lambda x: (x[0], -len(x[2])), reverse=True)
+            sale = re.search(r"de\s*[:]?\s*R\$\s*([0-9][0-9.]*,[0-9]{2}).{0,120}?(?:por|agora|à vista)\s*[:]?\s*R\$\s*([0-9][0-9.]*,[0-9]{2})", official_body, re.I | re.S)
+            if sale:
+                old_price = _format_price(sale.group(1))
+                price = _format_price(sale.group(2))
+            elif official_prices:
+                matches = official_prices[0][1]
+                if len(matches) >= 2:
+                    old_price = _format_price(matches[0])
+                    price = _format_price(matches[-1])
+                else:
+                    price = _format_price(matches[-1])
+            low_official = official_body.lower()
+            if not availability:
+                if any(x in low_official for x in ("indisponível", "esgotado", "sem estoque")):
+                    availability = "Indisponível"
+                elif "adicionar à sacola" in low_official or "adicionar a sacola" in low_official:
+                    availability = "Disponível"
+            if price:
+                price_source = "official_natura_product_page"
+        except Exception as exc:
+            debug_snippets.append(f"Fallback oficial Natura: {type(exc).__name__}: {str(exc)[:160]}")
+
+    if price and old_price:
+        try:
+            current = float(re.sub(r"[^0-9,]", "", price).replace(".", "").replace(",", "."))
+            original = float(re.sub(r"[^0-9,]", "", old_price).replace(".", "").replace(",", "."))
+            if original > current:
+                discount = str(round((1 - current / original) * 100)) + "%"
+        except Exception:
+            pass
+
     product.update({
         "title": _clean(title)[:180] or "Produto Natura",
         "price": price,
@@ -433,6 +493,7 @@ async def _inspect_product(page, product):
         "details_verified": True,
         "debug_price_nodes": price_nodes[:20],
         "price_source": (
+            price_source if "price_source" in locals() else
             "explicit_sale_text" if sale_match else
             "visible_product_price" if visible_prices and price else
             "structured_product_payload" if price else
