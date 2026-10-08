@@ -96,7 +96,7 @@ async def send_natura_collection_to_channel(app: Application, result: dict) -> i
             f"📉 Desconto: {discount}",
             f"📦 Disponibilidade: {availability}",
             "",
-            f"🔗 <a href="{escape_html(permalink)}">Comprar na Natura</a>" if permalink else "🔗 Link não identificado",
+            f"🔗 {escape_html(permalink)}" if permalink else "🔗 Link não identificado",
         ]
         caption = "\n".join(lines)
 
