@@ -263,7 +263,8 @@ async def _inspect_product(page, product):
         return not any(token in low for token in blocked)
 
     for value in (
-        next_payload.get("image"),\n        embedded.get("image"),
+        next_payload.get("image"),
+        embedded.get("image"),
         structured.get("image") if isinstance(structured.get("image"), str) else None,
         meta_map.get("og:image"),
     ):
