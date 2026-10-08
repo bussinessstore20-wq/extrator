@@ -218,7 +218,7 @@ async def _inspect_product(page, product):
             cls: typeof e.className === 'string' ? e.className : '',
             aria: e.getAttribute('aria-label') || '',
             testid: e.getAttribute('data-testid') || ''
-        })).filter(x => /R\\$\\s*\\d/.test(x.text)).slice(0, 30)"""
+        })).filter(x => /R\\$\\s*\\d/.test(x.text) && x.text.length <= 500).slice(0, 80)"""
     )
     image_urls = await page.locator("img").evaluate_all(
         """els => els.map(x => ({
@@ -323,15 +323,21 @@ async def _inspect_product(page, product):
         price = _format_price(sale_match.group(2))
 
     if not price and visible_prices:
-        price = visible_prices[0][1][-1]
+        ranked_visible = sorted(visible_prices, key=lambda x: (x[0], -len(x[2])), reverse=True)
+        for score, matches, node_text in ranked_visible:
+            low_text = node_text.lower()
+            if any(k in low_text for k in ("frete", "parcel", "pix", "cartão", "cartao")):
+                continue
+            price = matches[-1]
+            break
 
-    # Payload estruturado entra apenas como fallback.
+    # Payload estruturado somente se estiver ligado ao SKU consultado.
     if not price:
-        price = (
-            _format_price(next_payload.get("price"))
-            or _format_price(embedded.get("price"))
-            or _format_price(structured.get("price"))
-        )
+        for candidate in (next_payload.get("price"), embedded.get("price"), structured.get("price")):
+            formatted = _format_price(candidate)
+            if formatted:
+                price = formatted
+                break
     if not old_price:
         old_price = (
             _format_price(next_payload.get("old_price"))
@@ -339,7 +345,7 @@ async def _inspect_product(page, product):
         )
 
     raw_price_matches = list(dict.fromkeys(
-        re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\n" + html, re.I)
+        re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text, re.I)
     ))
 
     # Segurança: em uma promoção normal, o preço anterior não pode ser menor
@@ -366,8 +372,8 @@ async def _inspect_product(page, product):
             node_prices.extend(re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", node.get("text", ""), re.I))
         if node_prices:
             price = node_prices[-1]
-        elif raw_price_matches:
-            price = raw_price_matches[-1]
+        elif len(raw_price_matches) == 1:
+            price = raw_price_matches[0]
 
     availability = next_payload.get("availability") or embedded.get("availability") or structured.get("availability")
     if not availability:
@@ -425,7 +431,13 @@ async def _inspect_product(page, product):
         "image": image,
         "availability": availability,
         "details_verified": True,
-        "debug_price_nodes": price_nodes[:10],
+        "debug_price_nodes": price_nodes[:20],
+        "price_source": (
+            "explicit_sale_text" if sale_match else
+            "visible_product_price" if visible_prices and price else
+            "structured_product_payload" if price else
+            None
+        ),
         "debug_images": [{"score": score, "src": src} for score, src in ranked_images[:15]],
         "debug_snippets": debug_snippets[:10],
         "debug_product_scripts": debug_scripts,
