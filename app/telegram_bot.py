@@ -1,5 +1,7 @@
 import hashlib
 import logging
+from io import BytesIO
+import httpx
 from datetime import datetime, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
@@ -58,16 +60,18 @@ def escape_html(value: str) -> str:
 
 
 async def send_natura_collection_to_channel(app: Application, result: dict) -> int:
-    """Envia imediatamente para o canal configurado os produtos obtidos na coleta pública da Natura."""
+    """Envia os dados da coleta Natura imediatamente para o canal."""
     if not config.telegram_ready() or not config.TELEGRAM_CHANNEL_ID:
-        log.warning("Coleta Natura concluída, mas o Telegram/canal não está configurado.")
+        log.warning("Natura: Telegram/canal não configurado.")
         return 0
 
     products = result.get("products") or []
+    log.info("Natura: %s produtos encontrados; enviando ao canal %s.", len(products), config.TELEGRAM_CHANNEL_ID)
+
     if not products:
         await app.bot.send_message(
             chat_id=config.TELEGRAM_CHANNEL_ID,
-            text="🌿 <b>Coleta Natura</b>\\n\\nNenhum produto encontrado nesta coleta.",
+            text="🌿 <b>Coleta Natura</b>\n\nNenhum produto encontrado nesta coleta.",
             parse_mode="HTML",
         )
         return 0
@@ -92,15 +96,22 @@ async def send_natura_collection_to_channel(app: Application, result: dict) -> i
             f"📉 Desconto: {discount}",
             f"📦 Disponibilidade: {availability}",
             "",
-            f"🔗 <a href=\"{escape_html(permalink)}\">Comprar na Natura</a>" if permalink else "🔗 Link não identificado",
+            f"🔗 <a href="{escape_html(permalink)}">Comprar na Natura</a>" if permalink else "🔗 Link não identificado",
         ]
-        caption = "\\n".join(lines)
+        caption = "\n".join(lines)
 
         try:
             if image:
+                # O Telegram estava recusando algumas URLs de imagem da Natura.
+                # Baixamos a imagem no servidor e enviamos os bytes ao Telegram.
+                async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                    response = await client.get(image, headers={"User-Agent": "Mozilla/5.0"})
+                    response.raise_for_status()
+                    image_bytes = BytesIO(response.content)
+                    image_bytes.name = "natura.jpg"
                 await app.bot.send_photo(
                     chat_id=config.TELEGRAM_CHANNEL_ID,
-                    photo=image,
+                    photo=image_bytes,
                     caption=caption,
                     parse_mode="HTML",
                 )
@@ -112,8 +123,10 @@ async def send_natura_collection_to_channel(app: Application, result: dict) -> i
                     disable_web_page_preview=False,
                 )
             sent += 1
+            log.info("Natura: produto enviado ao canal: %s", product.get("title"))
         except Exception as exc:
-            log.warning("Falha ao enviar imagem da Natura para o canal: %s", exc)
+            # Nunca perde os dados: se a imagem falhar, publica imediatamente o texto + link.
+            log.warning("Natura: imagem falhou para %s: %s. Enviando texto.", product.get("title"), exc)
             try:
                 await app.bot.send_message(
                     chat_id=config.TELEGRAM_CHANNEL_ID,
@@ -122,9 +135,11 @@ async def send_natura_collection_to_channel(app: Application, result: dict) -> i
                     disable_web_page_preview=False,
                 )
                 sent += 1
-            except Exception:
-                log.exception("Falha definitiva ao enviar produto Natura para o canal.")
+                log.info("Natura: texto enviado ao canal: %s", product.get("title"))
+            except Exception as text_exc:
+                log.exception("Natura: falha definitiva no envio de %s: %s", product.get("title"), text_exc)
 
+    log.info("Natura: envio concluído. %s/%s produtos enviados ao canal.", sent, len(products))
     return sent
 
 async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
