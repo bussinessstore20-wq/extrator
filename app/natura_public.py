@@ -238,7 +238,8 @@ async def _inspect_product(page, product):
 
     product_code = product["permalink"].rstrip("/").rsplit("/", 1)[-1]
     structured = _extract_product_jsonld(jsonlds)
-    embedded = _extract_embedded_product(scripts, product_code)\n    next_payload = _extract_next_payload_product(scripts, product_code)
+    embedded = _extract_embedded_product(scripts, product_code)
+    next_payload = _extract_next_payload_product(scripts, product_code)
 
     title = (
         structured.get("name")
