@@ -631,30 +631,47 @@ el('runShopeePublic').addEventListener('click', async () => {
 
 el('runNatura').addEventListener('click', async () => {
   await postAction('/admin/natura/public-test', 'runNatura', 'shopeeResult', 'Abrindo Natura…', d => {
-    el('shopeeResult').textContent =
-      'Teste público Natura concluído.\\n' +
-      'Produtos encontrados: ' + (d.products_discovered || 0) + '\\n\\n' +
-      'PRODUTOS ENCONTRADOS (até 10):\\n' +
-      ((d.products || []).length
-        ? d.products.map((x,i) => {
-            const details = [
-              (i+1) + '. ' + (x.title || 'Produto Natura'),
-              'Preço: ' + (x.price || 'não identificado'),
-              'Preço anterior: ' + (x.old_price || 'não identificado'),
-              'Desconto: ' + (x.discount || 'não identificado'),
-              'Disponibilidade: ' + (x.availability || 'não identificada'),
-              'Imagem: ' + (x.image || 'não identificada'),
-              'Detalhes verificados: ' + (x.details_verified ? 'sim' : 'não'),
-              'Link: ' + x.permalink
-            ];
-            return details.join('\\n');
-          }).join('\\n\\n')
-        : 'Nenhum produto encontrado.') +
-      '\\n\\nErros: ' + (d.errors || []).length +
-      '\\nColeta automática: desligada';
+    const products = d.products || [];
+    const lines = [
+      'Teste público Natura concluído.',
+      'Produtos encontrados: ' + (d.products_discovered || 0),
+      '',
+      'PRODUTOS ENCONTRADOS (até 10):',
+      products.length ? products.map((x,i) => {
+        const details = [
+          (i+1) + '. ' + (x.title || 'Produto Natura'),
+          'Preço: ' + (x.price || 'não identificado'),
+          'Preço anterior: ' + (x.old_price || 'não identificado'),
+          'Desconto: ' + (x.discount || 'não identificado'),
+          'Disponibilidade: ' + (x.availability || 'não identificada'),
+          'Imagem: ' + (x.image || 'não identificada'),
+          'Detalhes verificados: ' + (x.details_verified ? 'sim' : 'não'),
+          'Link: ' + x.permalink
+        ];
+        const needsDebug = !x.price || !x.image || !x.availability || !x.old_price;
+        if (needsDebug) {
+          details.push('');
+          details.push('DIAGNÓSTICO DA PÁGINA:');
+          if ((x.debug_price_nodes || []).length) {
+            details.push('Nós com preço: ' + JSON.stringify(x.debug_price_nodes, null, 2));
+          }
+          if ((x.debug_images || []).length) {
+            details.push('Imagens candidatas: ' + JSON.stringify(x.debug_images, null, 2));
+          }
+          if ((x.debug_snippets || []).length) {
+            details.push('Trechos: ' + x.debug_snippets.join(' | '));
+          }
+          if ((x.debug_product_scripts || []).length) {
+            details.push('Scripts do produto: ' + x.debug_product_scripts.join(' || ').slice(0, 3000));
+          }
+        }
+        return details.join('\\n');
+      }).join('\\n\\n') : 'Nenhum produto encontrado.'
+    ];
+    lines.push('', 'Erros: ' + (d.errors || []).length, 'Coleta automática: desligada');
+    el('shopeeResult').textContent = lines.join('\\n');
   });
 });
-
 el('runShopee').addEventListener('click', async () => {
   await postAction('/admin/shopee/collector/run', 'runShopee', 'shopeeResult', 'Consultando Shopee…', d => {
     el('shopeeResult').textContent = 'Teste Shopee concluído.\\nCategorias consultadas: ' + (d.categories_seen || 0) + '\\nProdutos encontrados: ' + (d.items_seen || 0) + '\\nPáginas consultadas para origem: ' + (d.product_pages_checked || 0) + '\\nAnúncios com campo Enviado de encontrado: ' + (d.origin_values_found || 0) + '\\nProdutos sem verificação de origem: ' + (d.products_without_origin_check || 0) + '\\nOrigem nacional confirmada: ' + (d.accepted_national || 0) + '\\nOrigem desconhecida excluída: ' + (d.excluded_unknown_origin || 0) + '\\nAviso de importação internacional encontrado: ' + (d.international_notices_found || 0) + '\\nInternacionais excluídos: ' + (d.excluded_international || 0) + '\\nLinks novos salvos: ' + (d.new_items || 0) + '\\nErros: ' + (d.errors || 0) + '\\nIntervalo: ' + Math.round((d.interval_seconds || 600) / 60) + ' min · Limite: ' + (d.max_new_products || 5) + '\\n' + (d.warning || 'Filtro nacional aplicado.') + '\\nDiagnóstico dos campos da oferta (tipo:valor → quantidade):\\n' + JSON.stringify(d.offer_type_diagnostics || {}, null, 2) + '\\nEvidências reais de exclusão internacional (até 5):\\n' + (d.international_evidence_samples || []).map((x, i) => 'Amostra ' + (i + 1) + ' [' + (x.item_id || 'sem ID') + ']\\nTipo: ' + (x.evidence_type || 'nenhum') + '\\nTrecho: ' + (x.evidence || 'nenhum')).join('\\n\\n') + '\\n\\nLINKS PARA VERIFICAÇÃO MANUAL — ORIGEM DESCONHECIDA (até 10):\\n' + ((d.unknown_origin_links && d.unknown_origin_links.length) ? d.unknown_origin_links.map((url, i) => (i + 1) + '. ' + url).join('\\n') : (d.unknown_origin_samples || []).map((x, i) => (i + 1) + '. ' + (x.title || x.item_id || 'Produto') + '\\n' + (x.permalink || 'Link indisponível')).join('\\n\\n') || 'Nenhum link foi retornado pelo serviço.') + '\\nColeta automática: ' + (d.automatic_collection_enabled ? 'ligada' : 'desligada');
