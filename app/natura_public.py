@@ -235,7 +235,7 @@ async def _inspect_product(page, product):
     price = _format_price(embedded.get("price")) or _format_price(structured.get("price"))
     old_price = _format_price(embedded.get("old_price"))
 
-    raw_price_matches = list(dict.from_keys(
+    raw_price_matches = list(dict.fromkeys(
         re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\n" + html, re.I)
     ))
 
