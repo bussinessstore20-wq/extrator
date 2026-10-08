@@ -31,9 +31,14 @@ def _clean(value):
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _first_price(text):
-    match = re.search(r"R\$\s*([0-9][0-9.]*,[0-9]{2})", text or "", re.I)
-    return "R$ " + match.group(1) if match else None
+def _format_price(value):
+    value = _clean(value)
+    if not value or value.lower() in ("null", "none", "nan"):
+        return None
+    if re.fullmatch(r"[0-9]+(?:[.,][0-9]{1,2})?", value):
+        return "R$ " + value.replace(".", ",") if "," not in value else "R$ " + value
+    match = re.search(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", value, re.I)
+    return match.group(0) if match else None
 
 
 def _extract_product_jsonld(raw_items):
@@ -107,20 +112,6 @@ def _extract_embedded_product(raw_items, product_code):
     return result
 
 
-def _format_price(value):
-    value = _clean(value)
-    if not value:
-        return None
-    if value.lower() in ("null", "none", "nan"):
-        return None
-    if re.fullmatch(r"[0-9]+(?:[.,][0-9]{1,2})?", value):
-        if "," not in value:
-            value = value.replace(".", ",")
-        return "R$ " + value
-    match = re.search(r"R\\$\\s*[0-9][0-9.]*,[0-9]{2}", value, re.I)
-    return match.group(0) if match else None
-
-
 def _slug_title(url):
     slug = url.rstrip("/").rsplit("/", 2)[-2]
     slug = re.sub(r"[^a-zA-Z0-9À-ÿ]+", " ", slug)
@@ -139,7 +130,7 @@ async def _inspect_product(page, product):
     except Exception:
         pass
 
-    meta = await page.locator('meta').evaluate_all(
+    meta = await page.locator("meta").evaluate_all(
         """els => els.map(x => ({
             property: x.getAttribute('property') || '',
             name: x.getAttribute('name') || '',
@@ -147,10 +138,29 @@ async def _inspect_product(page, product):
         }))"""
     )
     jsonlds = await page.locator('script[type="application/ld+json"]').all_text_contents()
-    json_scripts = await page.locator('script').all_text_contents()
+    scripts = await page.locator("script").all_text_contents()
     body_text = _clean(await page.locator("body").inner_text(timeout=10000))
     html = await page.content()
-    image_urls = await page.locator("img").evaluate_all("""els => els.map(x => x.currentSrc || x.src || x.getAttribute("data-src") || "").filter(Boolean)""")
+
+    # Captura somente evidências úteis, sem devolver a página inteira.
+    price_nodes = await page.locator("body *").evaluate_all(
+        """els => els.map(e => ({
+            tag: e.tagName,
+            text: (e.innerText || e.textContent || '').trim(),
+            cls: typeof e.className === 'string' ? e.className : '',
+            aria: e.getAttribute('aria-label') || '',
+            testid: e.getAttribute('data-testid') || ''
+        })).filter(x => /R\\$\\s*\\d/.test(x.text)).slice(0, 30)"""
+    )
+    image_urls = await page.locator("img").evaluate_all(
+        """els => els.map(x => ({
+            src: x.currentSrc || x.src || x.getAttribute('data-src') || '',
+            alt: x.getAttribute('alt') || '',
+            cls: typeof x.className === 'string' ? x.className : '',
+            width: x.naturalWidth || 0,
+            height: x.naturalHeight || 0
+        })).filter(x => x.src).slice(0, 30)"""
+    )
 
     meta_map = {}
     for item in meta:
@@ -160,7 +170,7 @@ async def _inspect_product(page, product):
 
     product_code = product["permalink"].rstrip("/").rsplit("/", 1)[-1]
     structured = _extract_product_jsonld(jsonlds)
-    embedded = _extract_embedded_product(json_scripts, product_code)
+    embedded = _extract_embedded_product(scripts, product_code)
 
     title = (
         structured.get("name")
@@ -171,32 +181,29 @@ async def _inspect_product(page, product):
     if title.strip().lower() in ("minha loja", "natura", "minha loja natura"):
         title = _slug_title(product["permalink"])
 
-    image = structured.get("image")
-    if isinstance(image, list):
-        image = next((x for x in image if isinstance(x, str) and "logo" not in x.lower()), None)
-    if not image or "logo" in str(image).lower():
-        image = embedded.get("image") or meta_map.get("og:image")
-    if image and "logo" in str(image).lower():
-        image = None
-    if not image:
-        image = next((u for u in image_urls if "logo" not in u.lower() and "natura" in u.lower()), None)
-    if not image:
-        image = next((u for u in image_urls if "logo" not in u.lower()), None)
+    candidates = []
+    for value in (
+        embedded.get("image"),
+        structured.get("image") if isinstance(structured.get("image"), str) else None,
+        meta_map.get("og:image"),
+    ):
+        if value and "logo" not in str(value).lower():
+            candidates.append(value)
+    for item in image_urls:
+        src = item["src"]
+        if "logo" not in src.lower() and "brand.png" not in src.lower():
+            candidates.append(src)
+    image = next(iter(dict.fromkeys(candidates)), None)
 
     price = _format_price(embedded.get("price")) or _format_price(structured.get("price"))
     old_price = _format_price(embedded.get("old_price"))
-    all_prices = re.findall(r"R\\$\\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\\n" + html, re.I)
-    if not all_prices:
-        all_prices = re.findall(r"(?:price|preco|preço|sellingPrice|salePrice|currentPrice)[^0-9]{0,80}([0-9]+(?:[.,][0-9]{1,2}))", html, re.I)
-    unique_prices = []
-    for value in all_prices:
-        value = _clean(value)
-        if value not in unique_prices:
-            unique_prices.append(value)
-    if not price and unique_prices:
-        price = unique_prices[-1]
-    if not old_price and len(unique_prices) >= 2:
-        old_price = unique_prices[0] if unique_prices[0] != price else (unique_prices[-2] if len(unique_prices) >= 3 else None)
+
+    raw_price_matches = re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\n" + html, re.I)
+    raw_price_matches = list(dict.fromkeys(raw_price_matches))
+    if not price and raw_price_matches:
+        price = raw_price_matches[-1]
+    if not old_price and len(raw_price_matches) >= 2:
+        old_price = raw_price_matches[0] if raw_price_matches[0] != price else None
 
     availability = embedded.get("availability") or structured.get("availability")
     if not availability:
@@ -207,7 +214,7 @@ async def _inspect_product(page, product):
                 break
 
     discount = None
-    discount_match = re.search(r"(\\d{1,2})\\s*%\\s*(?:off|de desconto)", body_text, re.I)
+    discount_match = re.search(r"(\d{1,2})\s*%\s*(?:off|de desconto)", body_text, re.I)
     if discount_match:
         discount = discount_match.group(1) + "%"
     elif price and old_price:
@@ -219,6 +226,33 @@ async def _inspect_product(page, product):
         except Exception:
             pass
 
+    # Diagnóstico real da página, para orientar o próximo parser.
+    debug_snippets = []
+    for pattern in (
+        r".{0,100}R\$\s*[0-9][0-9.]*,[0-9]{2}.{0,100}",
+        r".{0,100}(?:preço|preco|por apenas|de\s+R\$|à vista).{0,140}",
+    ):
+        for match in re.findall(pattern, body_text, re.I):
+            value = _clean(match)
+            if value and value not in debug_snippets:
+                debug_snippets.append(value)
+            if len(debug_snippets) >= 10:
+                break
+        if len(debug_snippets) >= 10:
+            break
+
+    debug_scripts = []
+    for raw in scripts:
+        if product_code.lower() in raw.lower() and any(
+            key in raw.lower()
+            for key in ("price", "preco", "preço", "image", "media", "offer")
+        ):
+            compact = _clean(raw)
+            if compact:
+                debug_scripts.append(compact[:1000])
+            if len(debug_scripts) >= 5:
+                break
+
     product.update({
         "title": _clean(title)[:180] or "Produto Natura",
         "price": price,
@@ -227,9 +261,12 @@ async def _inspect_product(page, product):
         "image": image,
         "availability": availability,
         "details_verified": True,
+        "debug_price_nodes": price_nodes[:10],
+        "debug_images": image_urls[:15],
+        "debug_snippets": debug_snippets[:10],
+        "debug_product_scripts": debug_scripts,
     })
     return product
-
 
 
 async def collect_natura_public_once(max_products=10):
@@ -302,7 +339,6 @@ async def collect_natura_public_once(max_products=10):
                 if len(products) >= max_products:
                     break
 
-            # Verifica os detalhes diretamente nas páginas públicas dos produtos.
             for product in products:
                 try:
                     await _inspect_product(page, product)
