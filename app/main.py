@@ -11,7 +11,7 @@ from app.shopee import collect_once as collect_shopee_once, shopee_ready, inspec
 from app.shopee_public import collect_public_once
 from app.natura_public import collect_natura_public_once
 from telegram import Update
-from app.telegram_bot import start_bot, send_pending_products, telegram_webhook_secret
+from app.telegram_bot import start_bot, send_pending_products, send_natura_collection_to_channel, telegram_webhook_secret
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # HTTP client URLs may contain Telegram bot tokens; never emit them in application logs.
@@ -401,7 +401,13 @@ async def natura_public_test(x_admin_secret: str | None = Header(default=None)):
     if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
         raise HTTPException(403, "Não autorizado.")
     try:
-        return await collect_natura_public_once(max_products=10)
+        result = await collect_natura_public_once(max_products=10)
+        sent_to_channel = 0
+        if runtime.get("bot") and config.telegram_ready():
+            sent_to_channel = await send_natura_collection_to_channel(runtime["bot"], result)
+        result["sent_to_channel"] = sent_to_channel
+        result["telegram_channel_configured"] = bool(config.telegram_ready() and config.TELEGRAM_CHANNEL_ID)
+        return result
     except Exception as exc:
         logger.exception("Falha no teste público da Natura")
         raise HTTPException(502, f"Teste público Natura falhou: {str(exc)[:450]}") from exc
