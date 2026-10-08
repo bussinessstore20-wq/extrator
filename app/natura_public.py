@@ -60,9 +60,76 @@ def _extract_product_jsonld(raw_items):
     return {}
 
 
+def _walk_json(value, product_code, hits):
+    if isinstance(value, dict):
+        text = json.dumps(value, ensure_ascii=False).lower()
+        if product_code.lower() in text:
+            hits.append(value)
+        for child in value.values():
+            _walk_json(child, product_code, hits)
+    elif isinstance(value, list):
+        for child in value:
+            _walk_json(child, product_code, hits)
+
+
+def _extract_embedded_product(raw_items, product_code):
+    hits = []
+    for raw in raw_items:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        _walk_json(data, product_code, hits)
+
+    result = {}
+    for item in hits:
+        if not isinstance(item, dict):
+            continue
+        for key in ("name", "productName", "title", "displayName"):
+            if not result.get("name") and isinstance(item.get(key), str):
+                result["name"] = _clean(item[key])
+        for key in ("price", "salePrice", "sellingPrice", "currentPrice", "promotionalPrice"):
+            value = item.get(key)
+            if value is not None and not isinstance(value, (dict, list)):
+                result.setdefault("price", _clean(value))
+        for key in ("listPrice", "originalPrice", "regularPrice", "fullPrice", "oldPrice"):
+            value = item.get(key)
+            if value is not None and not isinstance(value, (dict, list)):
+                result.setdefault("old_price", _clean(value))
+        for key in ("image", "imageUrl", "imageURL", "thumbnail", "thumbnailUrl"):
+            value = item.get(key)
+            if isinstance(value, str) and "logo" not in value.lower():
+                result.setdefault("image", value)
+        for key in ("availability", "stockStatus", "inventoryStatus"):
+            value = item.get(key)
+            if isinstance(value, str):
+                result.setdefault("availability", _clean(value))
+    return result
+
+
+def _format_price(value):
+    value = _clean(value)
+    if not value:
+        return None
+    if value.lower() in ("null", "none", "nan"):
+        return None
+    if re.fullmatch(r"[0-9]+(?:[.,][0-9]{1,2})?", value):
+        if "," not in value:
+            value = value.replace(".", ",")
+        return "R$ " + value
+    match = re.search(r"R\\$\\s*[0-9][0-9.]*,[0-9]{2}", value, re.I)
+    return match.group(0) if match else None
+
+
+def _slug_title(url):
+    slug = url.rstrip("/").rsplit("/", 2)[-2]
+    slug = re.sub(r"[^a-zA-Z0-9À-ÿ]+", " ", slug)
+    return _clean(slug).title()
+
+
 async def _inspect_product(page, product):
     await page.goto(product["permalink"], wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(2200)
+    await page.wait_for_timeout(3000)
 
     meta = await page.locator('meta').evaluate_all(
         """els => els.map(x => ({
@@ -72,7 +139,9 @@ async def _inspect_product(page, product):
         }))"""
     )
     jsonlds = await page.locator('script[type="application/ld+json"]').all_text_contents()
+    json_scripts = await page.locator('script').all_text_contents()
     body_text = _clean(await page.locator("body").inner_text(timeout=10000))
+    html = await page.content()
 
     meta_map = {}
     for item in meta:
@@ -80,47 +149,72 @@ async def _inspect_product(page, product):
         if key and item.get("content"):
             meta_map[key.lower()] = _clean(item["content"])
 
+    product_code = product["permalink"].rstrip("/").rsplit("/", 1)[-1]
     structured = _extract_product_jsonld(jsonlds)
-    title = structured.get("name") or meta_map.get("og:title") or product.get("title")
+    embedded = _extract_embedded_product(json_scripts, product_code)
+
+    title = (
+        structured.get("name")
+        or embedded.get("name")
+        or meta_map.get("og:title")
+        or _slug_title(product["permalink"])
+    )
+    if title.strip().lower() in ("minha loja", "natura", "minha loja natura"):
+        title = _slug_title(product["permalink"])
+
     image = structured.get("image")
     if isinstance(image, list):
-        image = image[0] if image else None
-    image = image or meta_map.get("og:image")
+        image = next((x for x in image if isinstance(x, str) and "logo" not in x.lower()), None)
+    if not image or "logo" in str(image).lower():
+        image = embedded.get("image") or meta_map.get("og:image")
+    if image and "logo" in str(image).lower():
+        image = None
 
-    price = None
-    if structured.get("price"):
-        price = "R$ " + structured["price"].replace(".", ",") if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", structured["price"]) else structured["price"]
-    if not price:
-        price = _first_price(body_text)
+    price = _format_price(embedded.get("price")) or _format_price(structured.get("price"))
+    old_price = _format_price(embedded.get("old_price"))
+    all_prices = re.findall(r"R\\$\\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\\n" + html, re.I)
+    unique_prices = []
+    for value in all_prices:
+        value = _clean(value)
+        if value not in unique_prices:
+            unique_prices.append(value)
+    if not price and unique_prices:
+        price = unique_prices[-1]
+    if not old_price and len(unique_prices) >= 2:
+        old_price = unique_prices[0] if unique_prices[0] != price else (unique_prices[-2] if len(unique_prices) >= 3 else None)
 
-    old_price = None
-    price_candidates = re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text, re.I)
-    if len(price_candidates) >= 2 and price and price_candidates[0] != price:
-        old_price = price_candidates[0]
-
-    availability = structured.get("availability")
+    availability = embedded.get("availability") or structured.get("availability")
     if not availability:
+        low = body_text.lower()
         for word in ("disponível", "indisponível", "esgotado", "sem estoque"):
-            if word in body_text.lower():
+            if word in low:
                 availability = word
                 break
+
+    discount = None
+    discount_match = re.search(r"(\\d{1,2})\\s*%\\s*(?:off|de desconto)", body_text, re.I)
+    if discount_match:
+        discount = discount_match.group(1) + "%"
+    elif price and old_price:
+        try:
+            current = float(re.sub(r"[^0-9,]", "", price).replace(".", "").replace(",", "."))
+            original = float(re.sub(r"[^0-9,]", "", old_price).replace(".", "").replace(",", "."))
+            if original > current:
+                discount = str(round((1 - current / original) * 100)) + "%"
+        except Exception:
+            pass
 
     product.update({
         "title": _clean(title)[:180] or "Produto Natura",
         "price": price,
         "old_price": old_price,
-        "discount": None,
+        "discount": discount,
         "image": image,
         "availability": availability,
         "details_verified": True,
     })
-
-    # Mantém somente dados públicos; não tenta login, carrinho ou checkout.
-    discount = re.search(r"(\d{1,2})\s*%\s*(?:off|de desconto)", body_text, re.I)
-    if discount:
-        product["discount"] = discount.group(1) + "%"
-
     return product
+
 
 
 async def collect_natura_public_once(max_products=10):
