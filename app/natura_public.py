@@ -290,12 +290,68 @@ async def _inspect_product(page, product):
     candidates.extend(src for _, src in ranked_images)
     image = next(iter(dict.fromkeys(candidates)), None)
 
-    price = _format_price(next_payload.get("price")) or _format_price(embedded.get("price")) or _format_price(structured.get("price"))
-    old_price = _format_price(next_payload.get("old_price")) or _format_price(embedded.get("old_price"))
+    # Preços: prioriza os valores realmente visíveis na página.
+    visible_prices = []
+    for node in price_nodes:
+        text = _clean(node.get("text", ""))
+        matches = re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", text, re.I)
+        if matches:
+            label = _clean(
+                node.get("cls", "") + " " + node.get("testid", "") + " " + node.get("aria", "")
+            ).lower()
+            score = 0
+            if any(k in label for k in ("price", "preco", "preço", "sale", "offer", "valor")):
+                score += 5
+            if any(k in text.lower() for k in ("por apenas", "por:", "à vista", "preço")):
+                score += 4
+            if any(k in text.lower() for k in ("de r$", "antes", "era")):
+                score -= 2
+            visible_prices.append((score, matches, text))
+
+    visible_prices.sort(key=lambda x: x[0], reverse=True)
+    price = None
+    old_price = None
+
+    # Procura explicitamente a estrutura "de X por Y".
+    sale_match = re.search(
+        r"(?:de\s*)R\$\s*([0-9][0-9.]*,[0-9]{2}).{0,100}?"
+        r"(?:por|agora|à vista)\s*(?:apenas\s*)?R\$\s*([0-9][0-9.]*,[0-9]{2})",
+        body_text, re.I | re.S
+    )
+    if sale_match:
+        old_price = _format_price(sale_match.group(1))
+        price = _format_price(sale_match.group(2))
+
+    if not price and visible_prices:
+        price = visible_prices[0][1][-1]
+
+    # Payload estruturado entra apenas como fallback.
+    if not price:
+        price = (
+            _format_price(next_payload.get("price"))
+            or _format_price(embedded.get("price"))
+            or _format_price(structured.get("price"))
+        )
+    if not old_price:
+        old_price = (
+            _format_price(next_payload.get("old_price"))
+            or _format_price(embedded.get("old_price"))
+        )
 
     raw_price_matches = list(dict.fromkeys(
         re.findall(r"R\$\s*[0-9][0-9.]*,[0-9]{2}", body_text + "\n" + html, re.I)
     ))
+
+    # Segurança: em uma promoção normal, o preço anterior não pode ser menor
+    # que o preço atual. Corrige inversão proveniente do payload.
+    if price and old_price:
+        try:
+            current_value = float(re.sub(r"[^0-9,]", "", price).replace(".", "").replace(",", "."))
+            old_value = float(re.sub(r"[^0-9,]", "", old_price).replace(".", "").replace(",", "."))
+            if old_value < current_value:
+                price, old_price = old_price, price
+        except Exception:
+            pass
 
     # Usa preço visível somente como fallback do preço atual.
     # Não transforma outro valor da página em preço anterior sem evidência estruturada.
