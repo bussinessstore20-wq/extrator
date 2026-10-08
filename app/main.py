@@ -634,9 +634,21 @@ el('runNatura').addEventListener('click', async () => {
     el('shopeeResult').textContent =
       'Teste público Natura concluído.\\n' +
       'Produtos encontrados: ' + (d.products_discovered || 0) + '\\n\\n' +
-      'LINKS DOS PRODUTOS (até 10):\\n' +
+      'PRODUTOS ENCONTRADOS (até 10):\\n' +
       ((d.products || []).length
-        ? d.products.map((x,i) => (i+1)+'. ' + (x.title || 'Produto Natura') + '\\n' + x.permalink).join('\\n\\n')
+        ? d.products.map((x,i) => {
+            const details = [
+              (i+1) + '. ' + (x.title || 'Produto Natura'),
+              'Preço: ' + (x.price || 'não identificado'),
+              'Preço anterior: ' + (x.old_price || 'não identificado'),
+              'Desconto: ' + (x.discount || 'não identificado'),
+              'Disponibilidade: ' + (x.availability || 'não identificada'),
+              'Imagem: ' + (x.image || 'não identificada'),
+              'Detalhes verificados: ' + (x.details_verified ? 'sim' : 'não'),
+              'Link: ' + x.permalink
+            ];
+            return details.join('\\n');
+          }).join('\\n\\n')
         : 'Nenhum produto encontrado.') +
       '\\n\\nErros: ' + (d.errors || []).length +
       '\\nColeta automática: desligada';
