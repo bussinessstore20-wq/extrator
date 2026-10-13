@@ -485,22 +485,6 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
   <div class="top-actions"><span id="overall" class="pill"><i class="dot"></i>Verificando serviço</span><a href="/status" target="_blank" rel="noopener">Status técnico ↗</a></div>
 </header>
 <div class="layout">
-  <section class="card wide">
-    <div class="card-head"><div><h2>Visão geral</h2><p class="sub">Acompanhe as conexões e execute testes manuais sem ligar as rotinas automáticas.</p></div><span id="dbPill" class="pill"><i class="dot"></i>Banco</span></div>
-    <div class="metrics">
-      <div class="metric"><b id="db">—</b><span>Conexão Supabase</span></div>
-      <div class="metric"><b id="ml">—</b><span>Credenciais Mercado Livre</span></div>
-      <div class="metric"><b id="shopee">—</b><span>Credenciais Shopee</span></div>
-      <div class="metric"><b id="updated">—</b><span>Última atualização</span></div>
-    </div>
-    <div class="divider"></div>
-    <p class="section-label">Rotinas automáticas</p>
-    <div class="metrics">
-      <div class="metric"><b id="auto">—</b><span>Mercado Livre</span></div>
-      <div class="metric"><b id="shopeeAuto">—</b><span>Shopee</span></div>
-      <div class="metric"><b id="pauseState">—</b><span>Controle Shopee</span></div>
-      <div class="metric"><b id="interval">10 min</b><span>Intervalo Shopee</span></div>
-    </div>
   </section>
   <section class="card wide">
     <div class="card-head"><div><h2>Chave administrativa</h2><p class="sub">A chave é enviada ao servidor apenas ao executar uma ação. Ela não é salva pelo painel.</p></div><span class="pill"><i class="dot"></i>Acesso protegido</span></div>
@@ -523,11 +507,19 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
       <p class="sub">A coleta automática permanece desligada. O teste manual não a ativa.</p>
       <button id="runShopee" class="btn primary">▶ Testar coleta Shopee</button>
       <button id="runShopeePublic" class="btn secondary">🌐 Testar coleta pública (navegador)</button>
-      <button id="runNatura" class="btn secondary">🌿 Testar Natura</button>
       <button id="pauseButton" class="btn orange">⏸ Pausar Shopee</button>
     </div>
     <div class="notice"><strong>Filtro de origem nacional ativo</strong>Produtos sem informação confiável de envio nacional são excluídos. Não serão enviados links de origem desconhecida.</div>
     <div id="shopeeResult" class="result" role="status">Aguardando teste manual.</div>
+  </section>
+  <section class="card">
+    <div class="card-head"><div><h2>Natura</h2><p class="sub">Teste independente da loja da consultoria. Os produtos continuam usando seu link personalizado.</p></div><span class="pill"><i class="dot"></i>Teste manual</span></div>
+    <div class="operation">
+      <div class="op-title"><div class="op-icon">🌿</div><div><h3>Testar coleta Natura</h3><small>Loja personalizada · consulta por produto</small></div></div>
+      <p class="sub">Executa o teste e envia os produtos encontrados ao canal do Telegram, se configurado. Não ativa coleta automática.</p>
+      <button id="runNatura" class="btn primary">🌿 Testar Natura</button>
+    </div>
+    <div id="naturaResult" class="result" role="status">Aguardando teste manual.</div>
   </section>
   <section class="card wide">
     <div class="card-head"><div><h2>Últimos resultados</h2><p class="sub">Resumo da última execução disponível nesta instância do serviço.</p></div><button id="refresh" class="btn secondary" style="width:auto;margin:0">↻ Atualizar status</button></div>
@@ -538,6 +530,22 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div id="result" class="result" role="status"></div>
   </section>
 </div>
+  <section class="card wide">
+    <div class="card-head"><div><h2>Visão geral</h2><p class="sub">Acompanhe as conexões e execute testes manuais sem ligar as rotinas automáticas.</p></div><span id="dbPill" class="pill"><i class="dot"></i>Banco</span></div>
+    <div class="metrics">
+      <div class="metric"><b id="db">—</b><span>Conexão Supabase</span></div>
+      <div class="metric"><b id="ml">—</b><span>Credenciais Mercado Livre</span></div>
+      <div class="metric"><b id="shopee">—</b><span>Credenciais Shopee</span></div>
+      <div class="metric"><b id="updated">—</b><span>Última atualização</span></div>
+    </div>
+    <div class="divider"></div>
+    <p class="section-label">Rotinas automáticas</p>
+    <div class="metrics">
+      <div class="metric"><b id="auto">—</b><span>Mercado Livre</span></div>
+      <div class="metric"><b id="shopeeAuto">—</b><span>Shopee</span></div>
+      <div class="metric"><b id="pauseState">—</b><span>Controle Shopee</span></div>
+      <div class="metric"><b id="interval">10 min</b><span>Intervalo Shopee</span></div>
+    </div>
 <footer class="footer"><span>Extrator · Painel operacional</span><span>As coletas manuais não ativam tarefas automáticas.</span></footer>
 </main>
 <script>
@@ -636,7 +644,7 @@ el('runShopeePublic').addEventListener('click', async () => {
 
 
 el('runNatura').addEventListener('click', async () => {
-  await postAction('/admin/natura/public-test', 'runNatura', 'shopeeResult', 'Abrindo Natura…', d => {
+  await postAction('/admin/natura/public-test', 'runNatura', 'naturaResult', 'Abrindo Natura…', d => {
     const products = d.products || [];
     const lines = [
       'Teste público Natura concluído.',
@@ -675,7 +683,7 @@ el('runNatura').addEventListener('click', async () => {
       }).join('\\n\\n') : 'Nenhum produto encontrado.'
     ];
     lines.push('', 'Erros: ' + (d.errors || []).length, 'Coleta automática: desligada');
-    el('shopeeResult').textContent = lines.join('\\n');
+    el('naturaResult').textContent = lines.join('\\n');
   });
 });
 el('runShopee').addEventListener('click', async () => {
