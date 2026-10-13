@@ -501,6 +501,15 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div id="mlResult" class="result" role="status">Aguardando execução manual.</div>
   </section>
   <section class="card">
+    <div class="card-head"><div><h2>Natura</h2><p class="sub">Teste independente da loja da consultoria. Os produtos continuam usando seu link personalizado.</p></div><span class="pill"><i class="dot"></i>Teste manual</span></div>
+    <div class="operation">
+      <div class="op-title"><div class="op-icon">🌿</div><div><h3>Testar coleta Natura</h3><small>Loja personalizada · consulta por produto</small></div></div>
+      <p class="sub">Executa o teste e envia os produtos encontrados ao canal do Telegram, se configurado. Não ativa coleta automática.</p>
+      <button id="runNatura" class="btn primary">🌿 Testar Natura</button>
+    </div>
+    <div id="naturaResult" class="result" role="status">Aguardando teste manual.</div>
+  </section>
+  <section class="card">
     <div class="card-head"><div><h2>Shopee</h2><p class="sub">Teste independente com limite de 5 links novos por ciclo, em intervalos de 10 minutos.</p></div><span id="shopeePill" class="pill warn"><i class="dot"></i>Origem não confirmada</span></div>
     <div class="operation" style="margin-top:16px">
       <div class="op-title"><div class="op-icon">🛍️</div><div><h3>Testar coleta Shopee</h3><small>API oficial de afiliados</small></div></div>
@@ -511,15 +520,6 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     </div>
     <div class="notice"><strong>Filtro de origem nacional ativo</strong>Produtos sem informação confiável de envio nacional são excluídos. Não serão enviados links de origem desconhecida.</div>
     <div id="shopeeResult" class="result" role="status">Aguardando teste manual.</div>
-  </section>
-  <section class="card">
-    <div class="card-head"><div><h2>Natura</h2><p class="sub">Teste independente da loja da consultoria. Os produtos continuam usando seu link personalizado.</p></div><span class="pill"><i class="dot"></i>Teste manual</span></div>
-    <div class="operation">
-      <div class="op-title"><div class="op-icon">🌿</div><div><h3>Testar coleta Natura</h3><small>Loja personalizada · consulta por produto</small></div></div>
-      <p class="sub">Executa o teste e envia os produtos encontrados ao canal do Telegram, se configurado. Não ativa coleta automática.</p>
-      <button id="runNatura" class="btn primary">🌿 Testar Natura</button>
-    </div>
-    <div id="naturaResult" class="result" role="status">Aguardando teste manual.</div>
   </section>
   <section class="card wide">
     <div class="card-head"><div><h2>Últimos resultados</h2><p class="sub">Resumo da última execução disponível nesta instância do serviço.</p></div><button id="refresh" class="btn secondary" style="width:auto;margin:0">↻ Atualizar status</button></div>
