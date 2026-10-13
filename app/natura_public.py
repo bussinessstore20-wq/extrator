@@ -593,7 +593,7 @@ async def _inspect_product(page, product):
     return product
 
 
-async def collect_natura_public_once(max_products=10, inspect_details=True):
+async def collect_natura_public_once(max_products=None, inspect_details=True):
     products, seen, errors = [], set(), []
     await _ensure_chromium()
 
@@ -639,7 +639,7 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
                             canonical_url = _with_consultoria(
                                 "https://www.minhaloja.natura.com" + parsed_path, current_marca
                             )
-                            if sku not in seen_skus and len(products) < max_products:
+                            if sku not in seen_skus and (max_products is None or len(products) < max_products):
                                 seen_skus.add(sku)
                                 products.append({
                                     "title": _clean(item.get("text"))[:180] or _slug_title(canonical_url),
@@ -672,7 +672,7 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
                     ):
                         category_queue.append((candidate, current_marca))
 
-            while (queue or category_queue or product_queue) and len(visited_pages) < max_pages_to_crawl and len(products) < max_products:
+            while (queue or category_queue or product_queue) and len(visited_pages) < max_pages_to_crawl and (max_products is None or len(products) < max_products):
                 if queue:
                     current_url, current_marca = queue.pop(0)
                 elif category_queue:
