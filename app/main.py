@@ -502,7 +502,7 @@ async def natura_public_test(x_admin_secret: str | None = Header(default=None)):
     if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
         raise HTTPException(403, "Não autorizado.")
     try:
-        result = await collect_natura_public_once(max_products=20, inspect_details=False)
+        result = await collect_natura_public_once(max_products=None, inspect_details=False)
         links = list(dict.fromkeys(
             str(product.get("permalink") or "").strip()
             for product in (result.get("products") or [])
