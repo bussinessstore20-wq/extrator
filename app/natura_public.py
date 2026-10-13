@@ -9,6 +9,24 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 STORE_URL = "https://www.minhaloja.natura.com/consultoria/lucasuy"
 
+# Evita duas requisições do painel tentando iniciar o mesmo executável Chromium
+# simultaneamente. ETXTBSY é transitório em alguns ambientes Linux/containers.
+_BROWSER_LAUNCH_LOCK = asyncio.Lock()
+
+
+async def _launch_chromium(pw):
+    async with _BROWSER_LAUNCH_LOCK:
+        for attempt in range(4):
+            try:
+                return await pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage"],
+                )
+            except Exception as exc:
+                if "ETXTBSY" not in str(exc) or attempt == 3:
+                    raise
+                await asyncio.sleep(1.0 * (attempt + 1))
+
 
 async def _ensure_chromium():
     executable = Path.home() / ".cache" / "ms-playwright"
@@ -556,9 +574,7 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
     await _ensure_chromium()
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+        browser = await _launch_chromium(pw)
         context = await browser.new_context(
             locale="pt-BR", timezone_id="America/Sao_Paulo",
             viewport={"width": 1365, "height": 900},
@@ -666,7 +682,7 @@ async def inspect_natura_product_url(url):
     product = {"title": "Produto Natura", "permalink": raw_url}
     await _ensure_chromium()
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = await _launch_chromium(pw)
         context = await browser.new_context(locale="pt-BR", timezone_id="America/Sao_Paulo", viewport={"width": 1365, "height": 900})
         page = await context.new_page()
         try:
