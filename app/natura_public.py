@@ -211,6 +211,18 @@ async def _inspect_product(page, product):
     jsonlds = await page.locator('script[type="application/ld+json"]').all_text_contents()
     scripts = await page.locator("script").all_text_contents()
     body_text = _clean(await page.locator("body").inner_text(timeout=10000))
+    # Isola o bloco principal do produto. A página também mostra recomendações
+    # com outros preços; eles nunca devem ser usados como preço deste SKU.
+    h1_title = ""
+    primary_text = body_text
+    try:
+        h1_title = _clean(await page.locator("h1").first.inner_text(timeout=2500))
+    except Exception:
+        pass
+    if h1_title:
+        title_pos = body_text.lower().find(h1_title.lower())
+        if title_pos >= 0:
+            primary_text = body_text[max(0, title_pos - 120):title_pos + 1800]
     html = await page.content()
 
     # Captura somente evidências úteis, sem devolver a página inteira.
@@ -317,9 +329,9 @@ async def _inspect_product(page, product):
 
     # Procura explicitamente a estrutura "de X por Y".
     sale_match = re.search(
-        r"(?:de\s*)R\$\s*([0-9][0-9.]*,[0-9]{2}).{0,100}?"
-        r"(?:por|agora|à vista)\s*(?:apenas\s*)?R\$\s*([0-9][0-9.]*,[0-9]{2})",
-        body_text, re.I | re.S
+        r"(?:de\s*[:]?\s*)?R\$\s*([0-9][0-9.]*,[0-9]{2}).{0,100}?"
+        r"R\$\s*([0-9][0-9.]*,[0-9]{2})",
+        primary_text, re.I | re.S
     )
     if sale_match:
         old_price = _format_price(sale_match.group(1))
@@ -387,7 +399,7 @@ async def _inspect_product(page, product):
                 break
 
     discount = None
-    discount_match = re.search(r"(\d{1,2})\s*%\s*(?:off|de desconto)", body_text, re.I)
+    discount_match = re.search(r"-?\s*(\d{1,2})\s*%\s*(?:off|de desconto)?", primary_text, re.I)
     if discount_match:
         discount = discount_match.group(1) + "%"
     elif price and old_price:
@@ -428,7 +440,7 @@ async def _inspect_product(page, product):
 
     # Fallback: a loja personalizada pode não expor os dados comerciais no DOM.
     # Consulta a página oficial do mesmo SKU, sem alterar o link publicado.
-    if official_url != original_url:
+    if official_url != original_url and (not price or not old_price):
         try:
             await page.goto(official_url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(3500)
@@ -455,14 +467,18 @@ async def _inspect_product(page, product):
             official_prices.sort(key=lambda x: (x[0], -len(x[2])), reverse=True)
             sale = re.search(r"de\s*[:]?\s*R\$\s*([0-9][0-9.]*,[0-9]{2}).{0,120}?(?:por|agora|à vista)\s*[:]?\s*R\$\s*([0-9][0-9.]*,[0-9]{2})", official_body, re.I | re.S)
             if sale:
-                old_price = _format_price(sale.group(1))
-                price = _format_price(sale.group(2))
+                if not old_price:
+                    old_price = _format_price(sale.group(1))
+                if not price:
+                    price = _format_price(sale.group(2))
             elif official_prices:
                 matches = official_prices[0][1]
                 if len(matches) >= 2:
-                    old_price = _format_price(matches[0])
-                    price = _format_price(matches[-1])
-                else:
+                    if not old_price:
+                        old_price = _format_price(matches[0])
+                    if not price:
+                        price = _format_price(matches[-1])
+                elif not price:
                     price = _format_price(matches[-1])
             low_official = official_body.lower()
             if not availability:
@@ -484,25 +500,31 @@ async def _inspect_product(page, product):
         except Exception:
             pass
 
+    availability_text = _clean(availability)
+    if availability_text:
+        availability_low = availability_text.lower()
+        if "schema.org/instock" in availability_low or availability_low in ("instock", "in stock", "available", "true"):
+            availability_text = "Disponível"
+        elif any(token in availability_low for token in ("outofstock", "soldout", "indisponível", "esgotado")):
+            availability_text = "Indisponível"
+        elif availability_low.startswith("https://schema.org/") or availability_low.startswith("http://schema.org/"):
+            availability_text = None
+
     product.update({
         "title": _clean(title)[:180] or "Produto Natura",
         "price": price,
         "old_price": old_price,
         "discount": discount,
         "image": image,
-        "availability": availability,
-        "details_verified": True,
-        "debug_price_nodes": price_nodes[:20],
+        "availability": availability_text,
+        "details_verified": bool(price and old_price and image),
         "price_source": (
             price_source if "price_source" in locals() else
-            "explicit_sale_text" if sale_match else
+            "primary_product_text" if sale_match else
             "visible_product_price" if visible_prices and price else
             "structured_product_payload" if price else
             None
         ),
-        "debug_images": [{"score": score, "src": src} for score, src in ranked_images[:15]],
-        "debug_snippets": debug_snippets[:10],
-        "debug_product_scripts": debug_scripts,
     })
     return product
 
