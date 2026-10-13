@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("extrator")
-runtime = {"bot": None, "collector_task": None, "shopee_task": None, "review_task": None, "webhook_task": None, "last_collection": None, "last_error": None, "shopee_last_collection": None, "shopee_last_error": None, "shopee_collector_paused": False}
+runtime = {"bot": None, "collector_task": None, "shopee_task": None, "natura_task": None, "review_task": None, "webhook_task": None, "last_collection": None, "last_error": None, "shopee_last_collection": None, "shopee_last_error": None, "shopee_collector_paused": False, "natura_collector_paused": False, "natura_last_collection": None, "natura_last_error": None}
 
 async def collector_loop():
     while True:
@@ -60,6 +60,51 @@ async def shopee_collector_loop():
             runtime["shopee_last_error"] = str(exc)[:500]
             logger.exception("Falha no ciclo de coleta Shopee")
             await asyncio.sleep(min(config.SHOPEE_COLLECTOR_INTERVAL_SECONDS, 300))
+
+async def natura_collector_loop():
+    """Extrai links novos dos catálogos Natura e Avon e os envia ao canal; pausa controlada pelo painel."""
+    await asyncio.sleep(15)
+    while True:
+        try:
+            if (config.NATURA_COLLECTOR_ENABLED and not runtime["natura_collector_paused"]
+                    and config.supabase_ready() and runtime.get("bot")
+                    and config.telegram_ready()):
+                result = await collect_natura_public_once(max_products=20, inspect_details=False)
+                products = result.get("products") or []
+                links = list(dict.fromkeys(
+                    str(product.get("permalink") or "").strip()
+                    for product in products
+                    if str(product.get("permalink") or "").strip()
+                ))[:20]
+                sent_rows = get_db().table("extrator_settings").select("value").eq("key", "natura_auto_sent_links").limit(1).execute().data or []
+                sent_links = (sent_rows[0].get("value") or {}).get("links", []) if sent_rows else []
+                sent_set = set(str(link) for link in sent_links)
+                new_links = [link for link in links if link not in sent_set]
+                sent_count = 0
+                if new_links:
+                    sent_count = await send_natura_links_to_channel(runtime["bot"], new_links)
+                    if sent_count:
+                        combined = list(dict.fromkeys([*sent_links, *new_links]))[-1000:]
+                        get_db().table("extrator_settings").upsert({
+                            "key": "natura_auto_sent_links",
+                            "value": {"links": combined}
+                        }).execute()
+                runtime["natura_last_collection"] = {
+                    "products_discovered": len(links),
+                    "new_links": len(new_links),
+                    "sent_messages": sent_count,
+                    "catalogs": ["natura", "avon"],
+                }
+                runtime["natura_last_error"] = None if not new_links or sent_count else "Links novos encontrados, mas não foi possível enviá-los ao canal."
+                logger.info("Natura automática: %s links encontrados, %s novos, %s mensagem(ns) enviada(s)", len(links), len(new_links), sent_count)
+            await asyncio.sleep(config.NATURA_COLLECTOR_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            runtime["natura_last_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            logger.exception("Falha no ciclo automático Natura/Avon")
+            await asyncio.sleep(min(config.NATURA_COLLECTOR_INTERVAL_SECONDS, 300))
+
 
 async def review_loop():
     while True:
@@ -125,9 +170,10 @@ async def lifespan(app: FastAPI):
         runtime["webhook_task"] = asyncio.create_task(webhook_loop())
     runtime["collector_task"] = asyncio.create_task(collector_loop())
     runtime["shopee_task"] = asyncio.create_task(shopee_collector_loop())
+    runtime["natura_task"] = asyncio.create_task(natura_collector_loop())
     runtime["review_task"] = asyncio.create_task(review_loop())
     yield
-    for key in ("collector_task", "shopee_task", "review_task", "webhook_task"):
+    for key in ("collector_task", "shopee_task", "natura_task", "review_task", "webhook_task"):
         task = runtime.get(key)
         if task:
             task.cancel()
@@ -192,6 +238,11 @@ async def status():
         "shopee_collector_paused": runtime["shopee_collector_paused"],
         "shopee_last_collection": runtime["shopee_last_collection"],
         "shopee_last_error": runtime["shopee_last_error"],
+        "natura_collector_enabled": bool(config.NATURA_COLLECTOR_ENABLED),
+        "natura_collector_interval_seconds": config.NATURA_COLLECTOR_INTERVAL_SECONDS,
+        "natura_collector_paused": runtime["natura_collector_paused"],
+        "natura_last_collection": runtime["natura_last_collection"],
+        "natura_last_error": runtime["natura_last_error"],
         "collector_enabled": bool(config.COLLECTOR_ENABLED),
         "last_collection": runtime["last_collection"], "last_error": runtime["last_error"],
     }
@@ -396,6 +447,22 @@ async def shopee_public_test(x_admin_secret: str | None = Header(default=None)):
 
 
 
+@app.post("/admin/natura/collector/pause")
+async def pause_natura_collector(x_admin_secret: str | None = Header(default=None)):
+    if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
+        raise HTTPException(403, "Não autorizado.")
+    runtime["natura_collector_paused"] = True
+    return {"status": "paused", "message": "Extração automática Natura/Avon pausada. Uma extração já em andamento poderá terminar."}
+
+
+@app.post("/admin/natura/collector/resume")
+async def resume_natura_collector(x_admin_secret: str | None = Header(default=None)):
+    if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
+        raise HTTPException(403, "Não autorizado.")
+    runtime["natura_collector_paused"] = False
+    return {"status": "resumed", "message": "Extração automática Natura/Avon retomada conforme a configuração do serviço."}
+
+
 @app.post("/admin/natura/product-details")
 async def natura_product_details(request: Request, x_admin_secret: str | None = Header(default=None)):
     if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
@@ -534,11 +601,12 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div id="mlResult" class="result" role="status">Aguardando execução manual.</div>
   </section>
   <section class="card">
-    <div class="card-head"><div><h2>Natura</h2><p class="sub">Duas ferramentas de teste. Os resultados aparecem somente neste painel; o envio ao Telegram está desativado.</p></div><span class="pill"><i class="dot"></i>Teste manual</span></div>
+    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Extração automática de até 20 links novos por ciclo, com envio ao canal e controle de pausa.</p></div><span id="naturaPill" class="pill warn"><i class="dot"></i>Verificando rotina</span></div>
     <div class="operation">
       <div class="op-title"><div class="op-icon">🔗</div><div><h3>1. Extrair links da Natura</h3><small>Sua loja personalizada · descoberta de produtos</small></div></div>
-      <p class="sub">Extrai até 20 links de produtos e envia ao canal, um link por linha, sem numeração ou texto extra.</p>
-      <button id="runNatura" class="btn primary">🔗 Extrair links da Natura</button>
+      <p class="sub">A rotina automática consulta os catálogos Natura e Avon a cada 10 minutos, envia apenas links ainda não enviados e mantém cada link em sua própria linha.</p>
+      <button id="runNatura" class="btn primary">🔗 Extrair links agora</button>
+      <button id="pauseNaturaButton" class="btn orange">⏸ Pausar extração automática</button>
     </div>
     <div id="naturaResult" class="result" role="status">Os resultados da extração de links aparecerão aqui.</div>
     <div class="operation">
@@ -583,6 +651,7 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div class="metrics">
       <div class="metric"><b id="auto">—</b><span>Mercado Livre</span></div>
       <div class="metric"><b id="shopeeAuto">—</b><span>Shopee</span></div>
+      <div class="metric"><b id="naturaAuto">—</b><span>Natura / Avon</span></div>
       <div class="metric"><b id="pauseState">—</b><span>Controle Shopee</span></div>
       <div class="metric"><b id="interval">10 min</b><span>Intervalo Shopee</span></div>
     </div>
@@ -616,6 +685,10 @@ async function refresh() {
     el('shopee').textContent = s.shopee_app_configured ? 'Configurado' : 'Pendente';
     el('auto').textContent = s.collector_enabled ? 'Ligada' : 'Desligada';
     el('shopeeAuto').textContent = s.shopee_collector_enabled ? 'Ligada' : 'Desligada';
+    el('naturaAuto').textContent = s.natura_collector_paused ? 'Pausada' : (s.natura_collector_enabled ? 'Ligada' : 'Desligada');
+    setPill('naturaPill', s.natura_collector_paused ? 'Extração pausada' : (s.natura_collector_enabled ? 'Automático ativo' : 'Automático desligado'), s.natura_collector_paused ? 'warn' : (s.natura_collector_enabled ? 'good' : 'bad'));
+    el('pauseNaturaButton').textContent = s.natura_collector_paused ? '▶ Retomar extração automática' : '⏸ Pausar extração automática';
+    el('pauseNaturaButton').className = 'btn ' + (s.natura_collector_paused ? 'green' : 'orange');
     el('pauseState').textContent = s.shopee_collector_paused ? 'Pausada' : (s.shopee_collector_enabled ? 'Ativa' : 'Desligada');
     el('interval').textContent = Math.round((s.shopee_collector_interval_seconds || 600) / 60) + ' min';
     el('updated').textContent = new Date().toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
@@ -650,6 +723,13 @@ async function postAction(url, buttonId, resultId, loadingText, render) {
   }
 }
 el('refresh').addEventListener('click', refresh);
+el('pauseNaturaButton').addEventListener('click', async () => {
+  const paused = statusData && statusData.natura_collector_paused;
+  const resume = paused;
+  await postAction(resume ? '/admin/natura/collector/resume' : '/admin/natura/collector/pause', 'pauseNaturaButton', 'naturaResult', resume ? 'Retomando…' : 'Pausando…', d => {
+    el('naturaResult').textContent = d.message || 'Estado da extração automática Natura/Avon atualizado.';
+  });
+});
 el('pauseButton').addEventListener('click', async () => {
   const paused = statusData && statusData.shopee_collector_paused;
   const resume = paused;
