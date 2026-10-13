@@ -8,12 +8,29 @@ from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 STORE_URL = "https://www.minhaloja.natura.com/consultoria/lucasuy"
+CATALOG_URLS = (
+    ("https://www.minhaloja.natura.com/consultoria/lucasuy?marca=natura", "natura"),
+    ("https://www.minhaloja.natura.com/consultoria/lucasuy?marca=avon", "avon"),
+)
 
 
-def _with_consultoria(url):
+def _with_consultoria(url, marca=None):
     parsed = urlparse(url)
-    query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k.lower() != "consultoria"]
+    query = [
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in ("consultoria", "marca")
+    ]
     query.append(("consultoria", "lucasuy"))
+    if marca in ("natura", "avon"):
+        query.append(("marca", marca))
+    else:
+        existing_brand = next(
+            (v.lower() for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+             if k.lower() == "marca" and v.lower() in ("natura", "avon")),
+            None,
+        )
+        if existing_brand:
+            query.append(("marca", existing_brand))
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 # Evita duas requisições do painel tentando iniciar o mesmo executável Chromium
@@ -588,20 +605,21 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
         )
         page = await context.new_page()
         try:
-            # Primeiro percorre a loja e páginas de categoria/coleção; páginas de
-            # produto ficam por último, pois suas recomendações repetem os mesmos SKUs.
-            queue = [STORE_URL]
+            # Varre os catálogos Natura e Avon separadamente para que cada URL
+            # de produto mantenha a marca e a atribuição da consultoria.
+            queue = list(CATALOG_URLS)
             category_queue = []
             product_queue = []
             visited_pages = set()
             seen_skus = set()
-            max_pages_to_crawl = 45
+            queued_products = set()
+            max_pages_to_crawl = 60
             excluded_paths = (
-                "/consultoria/", "/login", "/account", "/checkout", "/carrinho",
+                "/login", "/account", "/checkout", "/carrinho",
                 "/cart", "/favoritos", "/wishlist", "/ajuda", "/atendimento",
             )
 
-            async def collect_links_from_current_page():
+            async def collect_links_from_current_page(current_marca):
                 anchors = await page.locator("a").evaluate_all(
                     """els => els.map(a => ({
                         href: a.href || a.getAttribute('href') || '',
@@ -614,53 +632,61 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
                     if parsed.scheme != "https" or parsed.netloc.lower() != "www.minhaloja.natura.com":
                         continue
                     parsed_path = parsed.path.rstrip("/") or "/"
-
-                    # Deduplica por SKU, não pelo slug: o mesmo produto pode ter
-                    # variantes de URL (por exemplo, "75-ml" e "75ml").
-                    product_match = re.fullmatch(r"/p/.+/(NATBRA-\d+)", parsed_path, re.I)
-                    if product_match:
-                        sku = product_match.group(1).upper()
-                        if sku not in seen_skus and len(products) < max_products:
-                            seen_skus.add(sku)
-                            href = _with_consultoria("https://www.minhaloja.natura.com" + parsed_path)
-                            products.append({
-                                "title": _clean(item.get("text"))[:180] or _slug_title(href),
-                                "permalink": href,
-                            })
-                        if parsed_path not in visited_pages and raw_href not in product_queue:
-                            product_queue.append(_with_consultoria("https://www.minhaloja.natura.com" + parsed_path))
+                    if parsed_path.lower().startswith("/p/"):
+                        product_match = re.fullmatch(r"/p/.+/((?:NATBRA|AVNBRA)-\\d+)", parsed_path, re.I)
+                        if product_match:
+                            sku = product_match.group(1).upper()
+                            canonical_url = _with_consultoria(
+                                "https://www.minhaloja.natura.com" + parsed_path, current_marca
+                            )
+                            if sku not in seen_skus and len(products) < max_products:
+                                seen_skus.add(sku)
+                                products.append({
+                                    "title": _clean(item.get("text"))[:180] or _slug_title(canonical_url),
+                                    "permalink": canonical_url,
+                                    "brand_catalog": current_marca,
+                                    "sku": sku,
+                                })
+                            product_key = (sku, current_marca)
+                            if product_key not in queued_products:
+                                queued_products.add(product_key)
+                                product_queue.append((canonical_url, current_marca))
                         continue
 
                     low_path = parsed_path.lower()
                     if any(token in low_path for token in excluded_paths):
                         continue
-                    if parsed_path == "/" or parsed_path == urlparse(STORE_URL).path.rstrip("/"):
+                    # Não voltar à rota genérica de consultoria: ela perde a marca
+                    # selecionada e pode causar ciclos entre catálogos.
+                    if low_path.startswith("/consultoria/") or parsed_path == "/":
                         continue
-                    # Páginas de navegação/categoria são mais úteis para descobrir
-                    # produtos novos do que recomendações dentro de uma página de SKU.
-                    category_hint = any(token in low_path for token in (
-                        "/c/", "/categoria", "/category", "/colecao", "/collection",
-                        "/marca", "/brand", "/busca", "/search", "/linha",
-                    ))
-                    candidate = "https://www.minhaloja.natura.com" + parsed_path
-                    target_queue = category_queue if category_hint else category_queue
-                    if candidate not in visited_pages and candidate not in queue and candidate not in category_queue and candidate not in product_queue:
-                        category_queue.append(candidate)
+                    if not parsed_path.startswith("/"):
+                        continue
+                    candidate = _with_consultoria(
+                        "https://www.minhaloja.natura.com" + parsed_path, current_marca
+                    )
+                    if (candidate, current_marca) not in visited_pages and all(
+                        candidate != queued_url for queued_url, _ in queue
+                    ) and all(candidate != queued_url for queued_url, _ in category_queue) and all(
+                        candidate != queued_url for queued_url, _ in product_queue
+                    ):
+                        category_queue.append((candidate, current_marca))
 
             while (queue or category_queue or product_queue) and len(visited_pages) < max_pages_to_crawl and len(products) < max_products:
                 if queue:
-                    current_url = queue.pop(0)
+                    current_url, current_marca = queue.pop(0)
                 elif category_queue:
-                    current_url = category_queue.pop(0)
+                    current_url, current_marca = category_queue.pop(0)
                 else:
-                    current_url = product_queue.pop(0)
-                if current_url in visited_pages:
+                    current_url, current_marca = product_queue.pop(0)
+                page_key = (current_url, current_marca)
+                if page_key in visited_pages:
                     continue
-                visited_pages.add(current_url)
+                visited_pages.add(page_key)
                 try:
                     await page.goto(current_url, wait_until="domcontentloaded", timeout=25000)
-                    await page.wait_for_timeout(1800 if current_url == STORE_URL else 1100)
-                    await collect_links_from_current_page()
+                    await page.wait_for_timeout(1800 if current_url in (u for u, _ in CATALOG_URLS) else 1100)
+                    await collect_links_from_current_page(current_marca)
                 except PlaywrightTimeoutError:
                     errors.append("Tempo esgotado ao abrir página para descobrir links: " + current_url)
                 except Exception as exc:
@@ -687,7 +713,7 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
 
     return {
         "source": "natura_public_browser",
-        "store_url": STORE_URL,
+        "store_url": STORE_URL,\n        "catalog_urls": [url for url, _ in CATALOG_URLS],
         "products_discovered": len(products),
         "products": products,
         "errors": errors,
