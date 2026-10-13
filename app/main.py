@@ -69,7 +69,7 @@ async def natura_collector_loop():
             if (config.NATURA_COLLECTOR_ENABLED and not runtime["natura_collector_paused"]
                     and config.supabase_ready() and runtime.get("bot")
                     and config.telegram_ready()):
-                result = await collect_natura_public_once(max_products=20, inspect_details=False)
+                result = await collect_natura_public_once(max_products=None, inspect_details=False)
                 products = result.get("products") or []
                 links = list(dict.fromkeys(
                     str(product.get("permalink") or "").strip()
@@ -507,7 +507,7 @@ async def natura_public_test(x_admin_secret: str | None = Header(default=None)):
             str(product.get("permalink") or "").strip()
             for product in (result.get("products") or [])
             if str(product.get("permalink") or "").strip()
-        ))[:20]
+        ))
         result["products"] = [{"permalink": link} for link in links]
         result["products_discovered"] = len(links)
         sent = 0
@@ -613,10 +613,10 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div id="mlResult" class="result" role="status">Aguardando execução manual.</div>
   </section>
   <section class="card">
-    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Extração manual de até 20 links por execução, com envio ao canal.</p></div><span id="naturaPill" class="pill warn"><i class="dot"></i>Somente manual</span></div>
+    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Extração manual sem limite fixo de quantidade de links por execução, com envio ao canal.</p></div><span id="naturaPill" class="pill warn"><i class="dot"></i>Somente manual</span></div>
     <div class="operation">
       <div class="op-title"><div class="op-icon">🔗</div><div><h3>1. Extrair links da Natura</h3><small>Sua loja personalizada · descoberta de produtos</small></div></div>
-      <p class="sub">Use “Extrair links agora” quando quiser consultar os catálogos Natura e Avon. Não há agendamento automático; os links são enviados ao canal e cada link fica em sua própria linha.</p>
+      <p class="sub">Use “Extrair links agora” quando quiser consultar os catálogos Natura e Avon. Não há limite fixo de links por execução nem agendamento automático; os links são enviados ao canal e cada link fica em sua própria linha.</p>
       <button id="runNatura" class="btn primary">🔗 Extrair links agora</button>
       <button id="pauseNaturaButton" class="btn orange">⏸ Pausar extração manual</button>
     </div>
