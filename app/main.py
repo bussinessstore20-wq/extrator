@@ -9,9 +9,9 @@ from app.db import get_db, log_event
 from app.mercadolivre import collect_once
 from app.shopee import collect_once as collect_shopee_once, shopee_ready, inspect_affiliate_schema
 from app.shopee_public import collect_public_once
-from app.natura_public import collect_natura_public_once
+from app.natura_public import collect_natura_public_once, inspect_natura_product_url
 from telegram import Update
-from app.telegram_bot import start_bot, send_pending_products, send_natura_collection_to_channel, telegram_webhook_secret
+from app.telegram_bot import start_bot, send_pending_products, telegram_webhook_secret
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # HTTP client URLs may contain Telegram bot tokens; never emit them in application logs.
@@ -396,17 +396,29 @@ async def shopee_public_test(x_admin_secret: str | None = Header(default=None)):
 
 
 
+@app.post("/admin/natura/product-details")
+async def natura_product_details(request: Request, x_admin_secret: str | None = Header(default=None)):
+    if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
+        raise HTTPException(403, "Não autorizado.")
+    try:
+        payload = await request.json()
+        link = str(payload.get("url") or payload.get("link") or "").strip()
+        return await inspect_natura_product_url(link)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Falha ao extrair detalhes do link Natura")
+        raise HTTPException(502, f"Extração do produto Natura falhou: {str(exc)[:400]}") from exc
+
+
 @app.post("/admin/natura/public-test")
 async def natura_public_test(x_admin_secret: str | None = Header(default=None)):
     if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
         raise HTTPException(403, "Não autorizado.")
     try:
         result = await collect_natura_public_once(max_products=10)
-        sent_to_channel = 0
-        if runtime.get("bot") and config.telegram_ready():
-            sent_to_channel = await send_natura_collection_to_channel(runtime["bot"], result)
-        result["sent_to_channel"] = sent_to_channel
-        result["telegram_channel_configured"] = bool(config.telegram_ready() and config.TELEGRAM_CHANNEL_ID)
+        result["sent_to_channel"] = 0
+        result["telegram_delivery_disabled"] = True
         return result
     except Exception as exc:
         logger.exception("Falha no teste público da Natura")
@@ -501,13 +513,20 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div id="mlResult" class="result" role="status">Aguardando execução manual.</div>
   </section>
   <section class="card">
-    <div class="card-head"><div><h2>Natura</h2><p class="sub">Teste independente da loja da consultoria. Os produtos continuam usando seu link personalizado.</p></div><span class="pill"><i class="dot"></i>Teste manual</span></div>
+    <div class="card-head"><div><h2>Natura</h2><p class="sub">Duas ferramentas de teste. Os resultados aparecem somente neste painel; o envio ao Telegram está desativado.</p></div><span class="pill"><i class="dot"></i>Teste manual</span></div>
     <div class="operation">
-      <div class="op-title"><div class="op-icon">🌿</div><div><h3>Testar coleta Natura</h3><small>Loja personalizada · consulta por produto</small></div></div>
-      <p class="sub">Executa o teste e envia os produtos encontrados ao canal do Telegram, se configurado. Não ativa coleta automática.</p>
-      <button id="runNatura" class="btn primary">🌿 Testar Natura</button>
+      <div class="op-title"><div class="op-icon">🔗</div><div><h3>1. Extrair links da Natura</h3><small>Sua loja personalizada · descoberta de produtos</small></div></div>
+      <p class="sub">Procura produtos na loja e tenta extrair nome, preço, desconto, disponibilidade, imagem e link.</p>
+      <button id="runNatura" class="btn primary">🔗 Extrair links da Natura</button>
     </div>
-    <div id="naturaResult" class="result" role="status">Aguardando teste manual.</div>
+    <div id="naturaResult" class="result" role="status">Os resultados da extração de links aparecerão aqui.</div>
+    <div class="operation">
+      <div class="op-title"><div class="op-icon">🏷️</div><div><h3>2. Extrair dados por link</h3><small>Consulta individual de um produto</small></div></div>
+      <label class="field-label" for="naturaProductUrl">Link do produto Natura</label>
+      <input id="naturaProductUrl" type="url" placeholder="Cole aqui o link completo do produto">
+      <button id="runNaturaProduct" class="btn secondary">🔎 Extrair nome, preço e detalhes</button>
+    </div>
+    <div id="naturaProductResult" class="result" role="status">Cole um link de produto para consultar seus dados.</div>
   </section>
   <section class="card">
     <div class="card-head"><div><h2>Shopee</h2><p class="sub">Teste independente com limite de 5 links novos por ciclo, em intervalos de 10 minutos.</p></div><span id="shopeePill" class="pill warn"><i class="dot"></i>Origem não confirmada</span></div>
@@ -643,11 +662,55 @@ el('runShopeePublic').addEventListener('click', async () => {
 });
 
 
+el('runNaturaProduct').addEventListener('click', async () => {
+  const url = el('naturaProductUrl').value.trim();
+  if (!url) { el('naturaProductResult').textContent = 'Cole primeiro o link de um produto Natura.'; el('naturaProductUrl').focus(); return; }
+  const secret = el('secret').value.trim();
+  if (!secret) { el('naturaProductResult').textContent = 'Informe ADMIN_API_SECRET antes de executar esta ação.'; el('secret').focus(); return; }
+  const button = el('runNaturaProduct');
+  const oldText = button.textContent;
+  button.disabled = true; button.textContent = 'Extraindo…';
+  el('naturaProductResult').textContent = 'Consultando o produto. Aguarde…';
+  try {
+    const r = await fetch('/admin/natura/product-details', {
+      method: 'POST',
+      headers: {'X-Admin-Secret': secret, 'Content-Type': 'application/json'},
+      body: JSON.stringify({url})
+    });
+    const d = await r.json();
+    if (!r.ok) { el('naturaProductResult').textContent = d.detail || 'A extração não foi concluída.'; return; }
+    const x = d.product || {};
+    const lines = [
+      'EXTRAÇÃO INDIVIDUAL NATURA',
+      'Nome: ' + (x.title || 'não identificado'),
+      'Preço atual: ' + (x.price || 'não identificado'),
+      'Preço anterior: ' + (x.old_price || 'não identificado'),
+      'Desconto: ' + (x.discount || 'não identificado'),
+      'Disponibilidade: ' + (x.availability || 'não identificada'),
+      'Imagem: ' + (x.image || 'não identificada'),
+      'Detalhes verificados: ' + (x.details_verified ? 'sim' : 'não'),
+      'Link: ' + (x.permalink || url),
+      '',
+      'Envio ao Telegram: desativado'
+    ];
+    if (!x.price || !x.old_price || !x.image || !x.availability) {
+      lines.push('', 'DIAGNÓSTICO DA PÁGINA');
+      if ((x.debug_snippets || []).length) lines.push('Trechos: ' + x.debug_snippets.join(' | '));
+      if ((x.debug_price_nodes || []).length) lines.push('Nós com preço: ' + JSON.stringify(x.debug_price_nodes, null, 2));
+      if ((x.debug_product_scripts || []).length) lines.push('Scripts do produto: ' + x.debug_product_scripts.join(' || ').slice(0, 2500));
+    }
+    el('naturaProductResult').textContent = lines.join('\\n');
+  } catch (e) {
+    el('naturaProductResult').textContent = 'Falha de comunicação durante a extração. Tente novamente.';
+  } finally {
+    button.disabled = false; button.textContent = oldText;
+  }
+});
 el('runNatura').addEventListener('click', async () => {
   await postAction('/admin/natura/public-test', 'runNatura', 'naturaResult', 'Abrindo Natura…', d => {
     const products = d.products || [];
     const lines = [
-      'Teste público Natura concluído.',
+      'Extração de links Natura concluída (resultado somente neste painel).',
       'Produtos encontrados: ' + (d.products_discovered || 0),
       '',
       'PRODUTOS ENCONTRADOS (até 10):',
@@ -682,7 +745,7 @@ el('runNatura').addEventListener('click', async () => {
         return details.join('\\n');
       }).join('\\n\\n') : 'Nenhum produto encontrado.'
     ];
-    lines.push('', 'Erros: ' + (d.errors || []).length, 'Coleta automática: desligada');
+    lines.push('', 'Erros: ' + (d.errors || []).length, 'Envio ao Telegram: desativado', 'Coleta automática: desligada');
     el('naturaResult').textContent = lines.join('\\n');
   });
 });
