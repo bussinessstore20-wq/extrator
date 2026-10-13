@@ -551,7 +551,7 @@ async def _inspect_product(page, product):
     return product
 
 
-async def collect_natura_public_once(max_products=10):
+async def collect_natura_public_once(max_products=10, inspect_details=True):
     products, seen, errors = [], set(), []
     await _ensure_chromium()
 
@@ -621,15 +621,16 @@ async def collect_natura_public_once(max_products=10):
                 if len(products) >= max_products:
                     break
 
-            for product in products:
-                try:
-                    await _inspect_product(page, product)
-                except PlaywrightTimeoutError:
-                    product["details_verified"] = False
-                    errors.append("Tempo esgotado ao consultar: " + product["permalink"])
-                except Exception as exc:
-                    product["details_verified"] = False
-                    errors.append(f"Detalhes Natura: {type(exc).__name__}: {str(exc)[:180]}")
+            if inspect_details:
+                for product in products:
+                    try:
+                        await _inspect_product(page, product)
+                    except PlaywrightTimeoutError:
+                        product["details_verified"] = False
+                        errors.append("Tempo esgotado ao consultar: " + product["permalink"])
+                    except Exception as exc:
+                        product["details_verified"] = False
+                        errors.append(f"Detalhes Natura: {type(exc).__name__}: {str(exc)[:180]}")
 
         except PlaywrightTimeoutError:
             errors.append("Tempo esgotado ao abrir a loja pública Natura.")
