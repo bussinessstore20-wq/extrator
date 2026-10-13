@@ -178,7 +178,7 @@ async def lifespan(app: FastAPI):
         runtime["webhook_task"] = asyncio.create_task(webhook_loop())
     runtime["collector_task"] = asyncio.create_task(collector_loop())
     runtime["shopee_task"] = asyncio.create_task(shopee_collector_loop())
-    runtime["natura_task"] = asyncio.create_task(natura_collector_loop())
+    # Natura/Avon: extração somente manual pelo painel; não iniciar rotina agendada.
     runtime["review_task"] = asyncio.create_task(review_loop())
     yield
     for key in ("collector_task", "shopee_task", "natura_task", "review_task", "webhook_task"):
@@ -613,12 +613,12 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div id="mlResult" class="result" role="status">Aguardando execução manual.</div>
   </section>
   <section class="card">
-    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Extração automática de até 20 links novos por ciclo, com envio ao canal e controle de pausa.</p></div><span id="naturaPill" class="pill warn"><i class="dot"></i>Verificando rotina</span></div>
+    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Extração manual de até 20 links por execução, com envio ao canal.</p></div><span id="naturaPill" class="pill warn"><i class="dot"></i>Somente manual</span></div>
     <div class="operation">
       <div class="op-title"><div class="op-icon">🔗</div><div><h3>1. Extrair links da Natura</h3><small>Sua loja personalizada · descoberta de produtos</small></div></div>
-      <p class="sub">A rotina automática consulta os catálogos Natura e Avon a cada 10 minutos, envia apenas links ainda não enviados e mantém cada link em sua própria linha.</p>
+      <p class="sub">Use “Extrair links agora” quando quiser consultar os catálogos Natura e Avon. Não há agendamento automático; os links são enviados ao canal e cada link fica em sua própria linha.</p>
       <button id="runNatura" class="btn primary">🔗 Extrair links agora</button>
-      <button id="pauseNaturaButton" class="btn orange">⏸ Pausar extração automática</button>
+      <button id="pauseNaturaButton" class="btn orange">⏸ Pausar extração manual</button>
     </div>
     <div id="naturaResult" class="result" role="status">Os resultados da extração de links aparecerão aqui.</div>
     <div class="operation">
@@ -697,9 +697,9 @@ async function refresh() {
     el('shopee').textContent = s.shopee_app_configured ? 'Configurado' : 'Pendente';
     el('auto').textContent = s.collector_enabled ? 'Ligada' : 'Desligada';
     el('shopeeAuto').textContent = s.shopee_collector_enabled ? 'Ligada' : 'Desligada';
-    el('naturaAuto').textContent = s.natura_collector_paused ? 'Pausada' : (s.natura_collector_enabled ? 'Ligada' : 'Desligada');
-    setPill('naturaPill', s.natura_collector_paused ? 'Extração pausada' : (s.natura_collector_enabled ? 'Automático ativo' : 'Automático desligado'), s.natura_collector_paused ? 'warn' : (s.natura_collector_enabled ? 'good' : 'bad'));
-    el('pauseNaturaButton').textContent = s.natura_collector_paused ? '▶ Retomar extração automática' : '⏸ Pausar extração automática';
+    el('naturaAuto').textContent = 'Somente manual';
+    setPill('naturaPill', s.natura_collector_paused ? 'Extração manual pausada' : 'Somente manual', s.natura_collector_paused ? 'warn' : 'good');
+    el('pauseNaturaButton').textContent = s.natura_collector_paused ? '▶ Reativar botão de extração' : '⏸ Pausar botão de extração';
     el('pauseNaturaButton').className = 'btn ' + (s.natura_collector_paused ? 'green' : 'orange');
     el('pauseState').textContent = s.shopee_collector_paused ? 'Pausada' : (s.shopee_collector_enabled ? 'Ativa' : 'Desligada');
     el('interval').textContent = Math.round((s.shopee_collector_interval_seconds || 600) / 60) + ' min';
