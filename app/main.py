@@ -681,24 +681,15 @@ el('runNaturaProduct').addEventListener('click', async () => {
     if (!r.ok) { el('naturaProductResult').textContent = d.detail || 'A extração não foi concluída.'; return; }
     const x = d.product || {};
     const lines = [
-      'EXTRAÇÃO INDIVIDUAL NATURA',
+      'PRODUTO NATURA',
       'Nome: ' + (x.title || 'não identificado'),
       'Preço atual: ' + (x.price || 'não identificado'),
       'Preço anterior: ' + (x.old_price || 'não identificado'),
       'Desconto: ' + (x.discount || 'não identificado'),
       'Disponibilidade: ' + (x.availability || 'não identificada'),
       'Imagem: ' + (x.image || 'não identificada'),
-      'Detalhes verificados: ' + (x.details_verified ? 'sim' : 'não'),
-      'Link: ' + (x.permalink || url),
-      '',
-      'Envio ao Telegram: desativado'
+      'Link: ' + (x.permalink || url)
     ];
-    if (!x.price || !x.old_price || !x.image || !x.availability) {
-      lines.push('', 'DIAGNÓSTICO DA PÁGINA');
-      if ((x.debug_snippets || []).length) lines.push('Trechos: ' + x.debug_snippets.join(' | '));
-      if ((x.debug_price_nodes || []).length) lines.push('Nós com preço: ' + JSON.stringify(x.debug_price_nodes, null, 2));
-      if ((x.debug_product_scripts || []).length) lines.push('Scripts do produto: ' + x.debug_product_scripts.join(' || ').slice(0, 2500));
-    }
     el('naturaProductResult').textContent = lines.join('\\n');
   } catch (e) {
     el('naturaProductResult').textContent = 'Falha de comunicação durante a extração. Tente novamente.';
@@ -725,23 +716,6 @@ el('runNatura').addEventListener('click', async () => {
           'Detalhes verificados: ' + (x.details_verified ? 'sim' : 'não'),
           'Link: ' + x.permalink
         ];
-        const needsDebug = !x.price || !x.image || !x.availability || !x.old_price;
-        if (needsDebug) {
-          details.push('');
-          details.push('DIAGNÓSTICO DA PÁGINA:');
-          if ((x.debug_price_nodes || []).length) {
-            details.push('Nós com preço: ' + JSON.stringify(x.debug_price_nodes, null, 2));
-          }
-          if ((x.debug_images || []).length) {
-            details.push('Imagens candidatas: ' + JSON.stringify(x.debug_images, null, 2));
-          }
-          if ((x.debug_snippets || []).length) {
-            details.push('Trechos: ' + x.debug_snippets.join(' | '));
-          }
-          if ((x.debug_product_scripts || []).length) {
-            details.push('Scripts do produto: ' + x.debug_product_scripts.join(' || ').slice(0, 3000));
-          }
-        }
         return details.join('\\n');
       }).join('\\n\\n') : 'Nenhum produto encontrado.'
     ];
