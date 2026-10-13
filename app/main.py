@@ -723,7 +723,7 @@ el('runNatura').addEventListener('click', async () => {
   await postAction('/admin/natura/public-test', 'runNatura', 'naturaResult', 'Extraindo 20 links…', d => {
     const links = (d.products || []).map(x => x.permalink).filter(Boolean);
     el('naturaResult').textContent = links.length
-      ? links.join('\\n')
+      ? links.join('\n')
       : 'Nenhum link de produto encontrado.';
   });
 });
