@@ -581,54 +581,78 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
         )
         page = await context.new_page()
         try:
-            # A loja personalizada pode mostrar só uma vitrine curta. Começamos
-            # nela e seguimos links de produtos/recomendações para descobrir até
-            # 20 SKUs distintos, sem abrir a consulta detalhada de cada item.
+            # Primeiro percorre a loja e páginas de categoria/coleção; páginas de
+            # produto ficam por último, pois suas recomendações repetem os mesmos SKUs.
             queue = [STORE_URL]
+            category_queue = []
+            product_queue = []
             visited_pages = set()
-            max_pages_to_crawl = 16
+            seen_skus = set()
+            max_pages_to_crawl = 45
+            excluded_paths = (
+                "/consultoria/", "/login", "/account", "/checkout", "/carrinho",
+                "/cart", "/favoritos", "/wishlist", "/ajuda", "/atendimento",
+            )
 
             async def collect_links_from_current_page():
                 anchors = await page.locator("a").evaluate_all(
                     """els => els.map(a => ({
                         href: a.href || a.getAttribute('href') || '',
-                        text: (a.innerText || a.textContent || '').trim(),
-                        cardText: (() => {
-                            const card = a.closest(
-                                '[data-testid*="product"], [class*="product"], [class*="Product"], article, li'
-                            );
-                            return card ? (card.innerText || card.textContent || '').trim() : '';
-                        })()
+                        text: (a.innerText || a.textContent || '').trim()
                     }))"""
                 )
                 for item in anchors:
                     raw_href = str(item.get("href") or "").split("#")[0]
-                    if not raw_href.startswith("https://www.minhaloja.natura.com/"):
+                    parsed = urlparse(raw_href)
+                    if parsed.scheme != "https" or parsed.netloc.lower() != "www.minhaloja.natura.com":
                         continue
-                    parsed_path = urlparse(raw_href).path.rstrip("/")
-                    # Somente páginas de produto Natura com SKU no caminho.
-                    if not re.fullmatch(r"/p/.+/NATBRA-\d+", parsed_path, re.I):
-                        continue
-                    href = "https://www.minhaloja.natura.com" + parsed_path
-                    if href not in seen:
-                        seen.add(href)
-                        products.append({
-                            "title": _clean(item.get("text"))[:180] or _slug_title(href),
-                            "permalink": href,
-                        })
-                    if href not in visited_pages and href not in queue and len(products) < max_products:
-                        queue.append(href)
-                    if len(products) >= max_products:
-                        break
+                    parsed_path = parsed.path.rstrip("/") or "/"
 
-            while queue and len(visited_pages) < max_pages_to_crawl and len(products) < max_products:
-                current_url = queue.pop(0)
+                    # Deduplica por SKU, não pelo slug: o mesmo produto pode ter
+                    # variantes de URL (por exemplo, "75-ml" e "75ml").
+                    product_match = re.fullmatch(r"/p/.+/(NATBRA-\d+)", parsed_path, re.I)
+                    if product_match:
+                        sku = product_match.group(1).upper()
+                        if sku not in seen_skus and len(products) < max_products:
+                            seen_skus.add(sku)
+                            href = "https://www.minhaloja.natura.com" + parsed_path
+                            products.append({
+                                "title": _clean(item.get("text"))[:180] or _slug_title(href),
+                                "permalink": href,
+                            })
+                        if parsed_path not in visited_pages and raw_href not in product_queue:
+                            product_queue.append("https://www.minhaloja.natura.com" + parsed_path)
+                        continue
+
+                    low_path = parsed_path.lower()
+                    if any(token in low_path for token in excluded_paths):
+                        continue
+                    if parsed_path == "/" or parsed_path == urlparse(STORE_URL).path.rstrip("/"):
+                        continue
+                    # Páginas de navegação/categoria são mais úteis para descobrir
+                    # produtos novos do que recomendações dentro de uma página de SKU.
+                    category_hint = any(token in low_path for token in (
+                        "/c/", "/categoria", "/category", "/colecao", "/collection",
+                        "/marca", "/brand", "/busca", "/search", "/linha",
+                    ))
+                    candidate = "https://www.minhaloja.natura.com" + parsed_path
+                    target_queue = category_queue if category_hint else category_queue
+                    if candidate not in visited_pages and candidate not in queue and candidate not in category_queue and candidate not in product_queue:
+                        category_queue.append(candidate)
+
+            while (queue or category_queue or product_queue) and len(visited_pages) < max_pages_to_crawl and len(products) < max_products:
+                if queue:
+                    current_url = queue.pop(0)
+                elif category_queue:
+                    current_url = category_queue.pop(0)
+                else:
+                    current_url = product_queue.pop(0)
                 if current_url in visited_pages:
                     continue
                 visited_pages.add(current_url)
                 try:
                     await page.goto(current_url, wait_until="domcontentloaded", timeout=25000)
-                    await page.wait_for_timeout(1800 if current_url == STORE_URL else 900)
+                    await page.wait_for_timeout(1800 if current_url == STORE_URL else 1100)
                     await collect_links_from_current_page()
                 except PlaywrightTimeoutError:
                     errors.append("Tempo esgotado ao abrir página para descobrir links: " + current_url)
