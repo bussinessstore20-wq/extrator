@@ -4,10 +4,17 @@ import json
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 STORE_URL = "https://www.minhaloja.natura.com/consultoria/lucasuy"
+
+
+def _with_consultoria(url):
+    parsed = urlparse(url)
+    query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k.lower() != "consultoria"]
+    query.append(("consultoria", "lucasuy"))
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 # Evita duas requisições do painel tentando iniciar o mesmo executável Chromium
 # simultaneamente. ETXTBSY é transitório em alguns ambientes Linux/containers.
@@ -615,13 +622,13 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
                         sku = product_match.group(1).upper()
                         if sku not in seen_skus and len(products) < max_products:
                             seen_skus.add(sku)
-                            href = "https://www.minhaloja.natura.com" + parsed_path
+                            href = _with_consultoria("https://www.minhaloja.natura.com" + parsed_path)
                             products.append({
                                 "title": _clean(item.get("text"))[:180] or _slug_title(href),
                                 "permalink": href,
                             })
                         if parsed_path not in visited_pages and raw_href not in product_queue:
-                            product_queue.append("https://www.minhaloja.natura.com" + parsed_path)
+                            product_queue.append(_with_consultoria("https://www.minhaloja.natura.com" + parsed_path))
                         continue
 
                     low_path = parsed_path.lower()
