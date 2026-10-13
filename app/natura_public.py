@@ -226,15 +226,33 @@ async def _inspect_product(page, product):
     html = await page.content()
 
     # Captura somente evidências úteis, sem devolver a página inteira.
-    price_nodes = await page.locator("body *").evaluate_all(
-        """els => els.map(e => ({
-            tag: e.tagName,
-            text: (e.innerText || e.textContent || '').trim(),
-            cls: typeof e.className === 'string' ? e.className : '',
-            aria: e.getAttribute('aria-label') || '',
-            testid: e.getAttribute('data-testid') || ''
-        })).filter(x => /R\\$\\s*\\d/.test(x.text) && x.text.length <= 500).slice(0, 80)"""
+    product_section = await page.locator("h1").first.evaluate(
+        """h1 => {
+            const title = (h1.innerText || h1.textContent || '').trim();
+            let node = h1;
+            let best = h1.parentElement || h1;
+            for (let depth = 0; node && depth < 12; depth++, node = node.parentElement) {
+                const text = (node.innerText || '').trim();
+                const prices = text.match(/R\\$\\s*[0-9][0-9.]*,[0-9]{2}/g) || [];
+                if (title && text.includes(title) && prices.length && text.length <= 3500) {
+                    best = node;
+                    break;
+                }
+                if (text.length <= 3500 && prices.length) best = node;
+            }
+            const text = (best.innerText || '').trim();
+            const nodes = Array.from(best.querySelectorAll('*')).map(e => ({
+                tag: e.tagName,
+                text: (e.innerText || e.textContent || '').trim(),
+                cls: typeof e.className === 'string' ? e.className : '',
+                aria: e.getAttribute('aria-label') || '',
+                testid: e.getAttribute('data-testid') || ''
+            })).filter(x => /R\\$\\s*\\d/.test(x.text) && x.text.length <= 350);
+            return {title, text, nodes};
+        }"""
     )
+    primary_text = _clean(product_section.get("text") or primary_text)
+    price_nodes = product_section.get("nodes") or []
     image_urls = await page.locator("img").evaluate_all(
         """els => els.map(x => ({
             src: x.currentSrc || x.src || x.getAttribute('data-src') || '',
@@ -399,9 +417,13 @@ async def _inspect_product(page, product):
                 break
 
     discount = None
-    discount_match = re.search(r"-?\s*(\d{1,2})\s*%\s*(?:off|de desconto)?", primary_text, re.I)
+    discount_match = re.search(
+        r"(?:R\\$\\s*[0-9][0-9.]*,[0-9]{2}.{0,100}?-\\s*(\\d{1,2})\\s*%|"
+        r"-\\s*(\\d{1,2})\\s*%.{0,100}?R\\$\\s*[0-9][0-9.]*,[0-9]{2})",
+        primary_text, re.I | re.S
+    )
     if discount_match:
-        discount = discount_match.group(1) + "%"
+        discount = (discount_match.group(1) or discount_match.group(2)) + "%"
     elif price and old_price:
         try:
             current = float(re.sub(r"[^0-9,]", "", price).replace(".", "").replace(",", "."))
