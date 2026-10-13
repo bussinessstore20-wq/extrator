@@ -4,6 +4,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 STORE_URL = "https://www.minhaloja.natura.com/consultoria/lucasuy"
@@ -602,3 +603,41 @@ async def collect_natura_public_once(max_products=10):
         "errors": errors,
         "automatic_collection_enabled": False,
     }
+
+
+async def inspect_natura_product_url(url):
+    """Consulta um link de produto Natura e devolve os dados somente ao painel."""
+    raw_url = _clean(url)
+    if not raw_url:
+        raise ValueError("Cole o link de um produto Natura.")
+    if not re.match(r"^https?://", raw_url, re.I):
+        raw_url = "https://" + raw_url
+    parsed = urlparse(raw_url)
+    host = (parsed.hostname or "").lower()
+    allowed_hosts = {"minhaloja.natura.com", "www.minhaloja.natura.com", "natura.com.br", "www.natura.com.br"}
+    if parsed.scheme not in ("http", "https") or host not in allowed_hosts or parsed.username or parsed.password:
+        raise ValueError("Use um link público de produto dos domínios minhaloja.natura.com ou natura.com.br.")
+    path = (parsed.path or "").rstrip("/")
+    if not path or path.lower() in ("/", "/consultoria/lucasuy"):
+        raise ValueError("O link informado parece ser a página inicial da loja, não um produto.")
+    product = {"title": "Produto Natura", "permalink": raw_url}
+    await _ensure_chromium()
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = await browser.new_context(locale="pt-BR", timezone_id="America/Sao_Paulo", viewport={"width": 1365, "height": 900})
+        page = await context.new_page()
+        try:
+            try:
+                await _inspect_product(page, product)
+            except PlaywrightTimeoutError:
+                product["details_verified"] = False
+                product["error"] = "Tempo esgotado ao consultar a página do produto."
+            return {
+                "source": "natura_product_link",
+                "product": product,
+                "automatic_collection_enabled": False,
+                "telegram_sent": False,
+            }
+        finally:
+            await context.close()
+            await browser.close()
