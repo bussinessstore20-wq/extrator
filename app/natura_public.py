@@ -602,6 +602,8 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
                         })
                     if href not in visited_pages and href not in queue and len(products) < max_products:
                         queue.append(href)
+                    if len(products) >= max_products:
+                        break
 
             while queue and len(visited_pages) < max_pages_to_crawl and len(products) < max_products:
                 current_url = queue.pop(0)
