@@ -633,7 +633,7 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
                         continue
                     parsed_path = parsed.path.rstrip("/") or "/"
                     if parsed_path.lower().startswith("/p/"):
-                        product_match = re.fullmatch(r"/p/.+/((?:NATBRA|AVNBRA)-\\d+)", parsed_path, re.I)
+                        product_match = re.fullmatch(r"/p/.+/((?:NATBRA|AVNBRA)-\d+)", parsed_path, re.I)
                         if product_match:
                             sku = product_match.group(1).upper()
                             canonical_url = _with_consultoria(
