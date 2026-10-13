@@ -149,13 +149,13 @@ async def send_natura_links_to_channel(app: Application, links: list[str]) -> in
     for link in clean_links:
         extra = len(link) + (1 if current else 0)
         if current and current_length + extra > 3900:
-            chunks.append("\\n".join(current))
+            chunks.append("\n".join(current))
             current = []
             current_length = 0
         current.append(link)
         current_length += len(link) + (1 if len(current) > 1 else 0)
     if current:
-        chunks.append("\\n".join(current))
+            chunks.append("\n".join(current))
     sent = 0
     for chunk in chunks:
         try:
