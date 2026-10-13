@@ -565,61 +565,57 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
         )
         page = await context.new_page()
         try:
-            await page.goto(STORE_URL, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(5000)
-            for _ in range(4):
-                await page.mouse.wheel(0, 1800)
-                await page.wait_for_timeout(1000)
+            # A loja personalizada pode mostrar só uma vitrine curta. Começamos
+            # nela e seguimos links de produtos/recomendações para descobrir até
+            # 20 SKUs distintos, sem abrir a consulta detalhada de cada item.
+            queue = [STORE_URL]
+            visited_pages = set()
+            max_pages_to_crawl = 16
 
-            anchors = await page.locator("a").evaluate_all(
-                """els => els.map(a => {
-                    const card = a.closest(
-                        '[data-testid*="product"], [class*="product"], [class*="Product"], article, li'
-                    );
-                    return {
+            async def collect_links_from_current_page():
+                anchors = await page.locator("a").evaluate_all(
+                    """els => els.map(a => ({
                         href: a.href || a.getAttribute('href') || '',
                         text: (a.innerText || a.textContent || '').trim(),
-                        cardText: card ? (card.innerText || card.textContent || '').trim() : ''
-                    };
-                })"""
-            )
+                        cardText: (() => {
+                            const card = a.closest(
+                                '[data-testid*="product"], [class*="product"], [class*="Product"], article, li'
+                            );
+                            return card ? (card.innerText || card.textContent || '').trim() : '';
+                        })()
+                    }))"""
+                )
+                for item in anchors:
+                    raw_href = str(item.get("href") or "").split("#")[0]
+                    if not raw_href.startswith("https://www.minhaloja.natura.com/"):
+                        continue
+                    parsed_path = urlparse(raw_href).path.rstrip("/")
+                    # Somente páginas de produto Natura com SKU no caminho.
+                    if not re.fullmatch(r"/p/.+/NATBRA-\\d+", parsed_path, re.I):
+                        continue
+                    href = "https://www.minhaloja.natura.com" + parsed_path
+                    if href not in seen:
+                        seen.add(href)
+                        products.append({
+                            "title": _clean(item.get("text"))[:180] or _slug_title(href),
+                            "permalink": href,
+                        })
+                    if href not in visited_pages and href not in queue and len(products) < max_products:
+                        queue.append(href)
 
-            blocked = (
-                "/carrinho", "/login", "/entrar", "/cadastro",
-                "/favoritos", "/checkout", "/busca"
-            )
-
-            for item in anchors:
-                href = str(item.get("href") or "").split("#")[0].split("?")[0]
-                text = _clean(item.get("text"))
-                card_text = _clean(item.get("cardText"))
-                if not href.startswith("https://www.minhaloja.natura.com/"):
+            while queue and len(visited_pages) < max_pages_to_crawl and len(products) < max_products:
+                current_url = queue.pop(0)
+                if current_url in visited_pages:
                     continue
-                if href.rstrip("/") == STORE_URL.rstrip("/"):
-                    continue
-                lower = href.lower()
-                if any(part in lower for part in blocked):
-                    continue
-
-                path = href.split("minhaloja.natura.com/", 1)[-1].strip("/")
-                if not path or path.startswith("c/"):
-                    continue
-
-                has_price = bool(re.search(r"r\$\s*[0-9][0-9.,]*", card_text, re.I))
-                product_hint = bool(re.search(r"/(produto|produtos|item|itens)(/|$)", "/" + path, re.I))
-                deep_store_path = path.startswith("consultoria/lucasuy/") and path.count("/") >= 2
-                if not (has_price or product_hint or deep_store_path):
-                    continue
-                if href in seen:
-                    continue
-
-                seen.add(href)
-                products.append({
-                    "title": text[:180] or "Produto Natura",
-                    "permalink": href,
-                })
-                if len(products) >= max_products:
-                    break
+                visited_pages.add(current_url)
+                try:
+                    await page.goto(current_url, wait_until="domcontentloaded", timeout=25000)
+                    await page.wait_for_timeout(1800 if current_url == STORE_URL else 900)
+                    await collect_links_from_current_page()
+                except PlaywrightTimeoutError:
+                    errors.append("Tempo esgotado ao abrir página para descobrir links: " + current_url)
+                except Exception as exc:
+                    errors.append(f"Descoberta de links: {type(exc).__name__}: {str(exc)[:140]}")
 
             if inspect_details:
                 for product in products:
