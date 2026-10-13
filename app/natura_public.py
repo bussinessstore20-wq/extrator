@@ -607,7 +607,7 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
                         continue
                     parsed_path = urlparse(raw_href).path.rstrip("/")
                     # Somente páginas de produto Natura com SKU no caminho.
-                    if not re.fullmatch(r"/p/.+/NATBRA-\\d+", parsed_path, re.I):
+                    if not re.fullmatch(r"/p/.+/NATBRA-\d+", parsed_path, re.I):
                         continue
                     href = "https://www.minhaloja.natura.com" + parsed_path
                     if href not in seen:
