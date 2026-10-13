@@ -11,7 +11,7 @@ from app.shopee import collect_once as collect_shopee_once, shopee_ready, inspec
 from app.shopee_public import collect_public_once
 from app.natura_public import collect_natura_public_once, inspect_natura_product_url
 from telegram import Update
-from app.telegram_bot import start_bot, send_pending_products, telegram_webhook_secret
+from app.telegram_bot import start_bot, send_pending_products, send_natura_product_test, telegram_webhook_secret
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # HTTP client URLs may contain Telegram bot tokens; never emit them in application logs.
@@ -403,7 +403,14 @@ async def natura_product_details(request: Request, x_admin_secret: str | None = 
     try:
         payload = await request.json()
         link = str(payload.get("url") or payload.get("link") or "").strip()
-        return await inspect_natura_product_url(link)
+        result = await inspect_natura_product_url(link)
+        sent = 0
+        if runtime.get("bot") and config.telegram_ready() and config.TELEGRAM_CHANNEL_ID:
+            sent = await send_natura_product_test(runtime["bot"], result.get("product") or {})
+        result["telegram_sent"] = sent > 0
+        result["telegram_sent_count"] = sent
+        result["telegram_message"] = "Teste enviado ao canal." if sent else "Não enviado: bot/canal não configurado ou falha no envio."
+        return result
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -688,7 +695,8 @@ el('runNaturaProduct').addEventListener('click', async () => {
       'Desconto: ' + (x.discount || 'não identificado'),
       'Disponibilidade: ' + (x.availability || 'não identificada'),
       'Imagem: ' + (x.image || 'não identificada'),
-      'Link: ' + (x.permalink || url)
+      'Link: ' + (x.permalink || url),
+      'Telegram: ' + (d.telegram_sent ? 'teste enviado ao canal' : (d.telegram_message || 'não enviado'))
     ];
     el('naturaProductResult').textContent = lines.join('\\n');
   } catch (e) {
