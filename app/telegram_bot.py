@@ -59,6 +59,53 @@ def escape_html(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+async def send_natura_product_test(app: Application, product: dict) -> int:
+    """Envia o resultado do teste individual Natura ao canal com aviso personalizado."""
+    if not config.telegram_ready() or not config.TELEGRAM_CHANNEL_ID:
+        log.warning("Natura teste individual: Telegram/canal não configurado.")
+        return 0
+    title = escape_html(str(product.get("title") or "Produto Natura"))
+    price = escape_html(str(product.get("price") or "Preço não identificado"))
+    old_price = escape_html(str(product.get("old_price") or "Preço anterior não identificado"))
+    discount = escape_html(str(product.get("discount") or "Desconto não identificado"))
+    availability = escape_html(str(product.get("availability") or "Disponibilidade não identificada"))
+    permalink = str(product.get("permalink") or "").strip()
+    image = str(product.get("image") or "").strip()
+    caption = "\\n".join([
+        "🌿 <b>TESTE DE EXTRAÇÃO NATURA</b>",
+        "",
+        f"✨ <b>{title}</b>",
+        "",
+        f"💰 <b>Por: {price}</b>",
+        f"🏷️ De: {old_price}",
+        f"📉 Desconto: {discount}",
+        f"📦 Disponibilidade: {availability}",
+        "",
+        "🔎 <i>Mensagem de teste — confirme os valores antes de publicar como oferta.</i>",
+        f"🔗 {escape_html(permalink)}" if permalink else "🔗 Link não identificado",
+    ])
+    try:
+        if image:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                response = await client.get(image, headers={"User-Agent": "Mozilla/5.0"})
+                response.raise_for_status()
+                photo = BytesIO(response.content)
+                photo.name = "natura-teste.jpg"
+            await app.bot.send_photo(chat_id=config.TELEGRAM_CHANNEL_ID, photo=photo, caption=caption, parse_mode="HTML")
+        else:
+            await app.bot.send_message(chat_id=config.TELEGRAM_CHANNEL_ID, text=caption, parse_mode="HTML", disable_web_page_preview=False)
+        log.info("Natura teste individual enviado ao canal: %s", product.get("title"))
+        return 1
+    except Exception as exc:
+        log.warning("Natura teste individual: falha ao enviar imagem/mensagem: %s", exc)
+        try:
+            await app.bot.send_message(chat_id=config.TELEGRAM_CHANNEL_ID, text=caption, parse_mode="HTML", disable_web_page_preview=False)
+            return 1
+        except Exception:
+            log.exception("Natura teste individual: falha definitiva no Telegram")
+            return 0
+
+
 async def send_natura_collection_to_channel(app: Application, result: dict) -> int:
     """Envia os dados da coleta Natura imediatamente para o canal."""
     if not config.telegram_ready() or not config.TELEGRAM_CHANNEL_ID:
