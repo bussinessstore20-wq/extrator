@@ -73,21 +73,29 @@ async def send_natura_product_test(app: Application, product: dict) -> int:
     permalink = str(product.get("permalink") or "").strip()
     image = str(product.get("image") or "").strip()
 
+    has_discount = bool(product.get("old_price")) and str(product.get("old_price")).strip().lower() not in {"", "não identificado", "nao identificado", "none", "null"} and str(product.get("old_price")).strip() != str(product.get("price") or "").strip()
     lines = [
         "🌿 <b>TESTE DE EXTRAÇÃO NATURA</b>",
         "",
         f"✨ <b>{title}</b>",
         "━━━━━━━━━━━━━━━━━━",
-        f"🏷️ <b>De:</b> {old_price}",
-        f"💰 <b>Por:</b> {price}",
-        f"🔥 <b>Desconto:</b> {discount}",
+    ]
+    if has_discount:
+        lines.extend([
+            f"🏷️ <b>De:</b> {old_price}",
+            f"💰 <b>Por:</b> {price}",
+            f"🔥 <b>Desconto:</b> {discount}",
+        ])
+    else:
+        lines.append(f"💰 <b>Por:</b> {price}")
+    lines.extend([
         f"📦 <b>Disponibilidade:</b> {availability}",
         "━━━━━━━━━━━━━━━━━━",
         "🛍️ <b>Compre pelo meu link Natura:</b>",
         f"🔗 {escape_html(permalink)}" if permalink else "🔗 Link não identificado",
         "",
         "⚠️ <i>Mensagem de teste — confirme os valores antes de publicar como oferta.</i>",
-    ]
+    ])
     caption = "\n".join(lines)
 
     try:
@@ -154,18 +162,26 @@ async def send_natura_collection_to_channel(app: Application, result: dict) -> i
         permalink = str(product.get("permalink") or "").strip()
         image = str(product.get("image") or "").strip()
 
+        has_discount = bool(product.get("old_price")) and str(product.get("old_price")).strip().lower() not in {"", "não identificado", "nao identificado", "none", "null"} and str(product.get("old_price")).strip() != str(product.get("price") or "").strip()
         lines = [
             "🌿 <b>OFERTA NATURA</b>",
             "",
             f"✨ <b>{title}</b>",
             "",
-            f"💰 <b>Por: {price}</b>",
-            f"🏷️ De: {old_price}",
-            f"📉 Desconto: {discount}",
+        ]
+        if has_discount:
+            lines.extend([
+                f"🏷️ De: {old_price}",
+                f"💰 Por: {price}",
+                f"🔥 Desconto: {discount}",
+            ])
+        else:
+            lines.append(f"💰 Por: {price}")
+        lines.extend([
             f"📦 Disponibilidade: {availability}",
             "",
             f"🔗 {escape_html(permalink)}" if permalink else "🔗 Link não identificado",
-        ]
+        ])
         caption = "\n".join(lines)
 
         try:
