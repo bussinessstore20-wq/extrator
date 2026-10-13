@@ -11,7 +11,7 @@ from app.shopee import collect_once as collect_shopee_once, shopee_ready, inspec
 from app.shopee_public import collect_public_once
 from app.natura_public import collect_natura_public_once, inspect_natura_product_url
 from telegram import Update
-from app.telegram_bot import start_bot, send_pending_products, send_natura_product_test, telegram_webhook_secret
+from app.telegram_bot import start_bot, send_pending_products, send_natura_product_test, send_natura_links_to_channel, telegram_webhook_secret
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # HTTP client URLs may contain Telegram bot tokens; never emit them in application logs.
@@ -423,9 +423,23 @@ async def natura_public_test(x_admin_secret: str | None = Header(default=None)):
     if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
         raise HTTPException(403, "Não autorizado.")
     try:
-        result = await collect_natura_public_once(max_products=10)
-        result["sent_to_channel"] = 0
-        result["telegram_delivery_disabled"] = True
+        result = await collect_natura_public_once(max_products=20, inspect_details=False)
+        links = list(dict.fromkeys(
+            str(product.get("permalink") or "").strip()
+            for product in (result.get("products") or [])
+            if str(product.get("permalink") or "").strip()
+        ))[:20]
+        result["products"] = [{"permalink": link} for link in links]
+        result["products_discovered"] = len(links)
+        sent = 0
+        if runtime.get("bot") and config.telegram_ready() and config.TELEGRAM_CHANNEL_ID:
+            sent = await send_natura_links_to_channel(runtime["bot"], links)
+        result["sent_to_channel"] = sent
+        result["telegram_delivery_disabled"] = False
+        result["telegram_message"] = (
+            f"{sent} mensagem(ns) enviada(s) ao canal com {len(links)} links."
+            if sent else "Links extraídos, mas não enviados: confira a conexão do bot e o canal."
+        )
         return result
     except Exception as exc:
         logger.exception("Falha no teste público da Natura")
@@ -523,7 +537,7 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div class="card-head"><div><h2>Natura</h2><p class="sub">Duas ferramentas de teste. Os resultados aparecem somente neste painel; o envio ao Telegram está desativado.</p></div><span class="pill"><i class="dot"></i>Teste manual</span></div>
     <div class="operation">
       <div class="op-title"><div class="op-icon">🔗</div><div><h3>1. Extrair links da Natura</h3><small>Sua loja personalizada · descoberta de produtos</small></div></div>
-      <p class="sub">Procura produtos na loja e tenta extrair nome, preço, desconto, disponibilidade, imagem e link.</p>
+      <p class="sub">Extrai até 20 links de produtos e envia ao canal, um link por linha, sem numeração ou texto extra.</p>
       <button id="runNatura" class="btn primary">🔗 Extrair links da Natura</button>
     </div>
     <div id="naturaResult" class="result" role="status">Os resultados da extração de links aparecerão aqui.</div>
@@ -706,29 +720,11 @@ el('runNaturaProduct').addEventListener('click', async () => {
   }
 });
 el('runNatura').addEventListener('click', async () => {
-  await postAction('/admin/natura/public-test', 'runNatura', 'naturaResult', 'Abrindo Natura…', d => {
-    const products = d.products || [];
-    const lines = [
-      'Extração de links Natura concluída (resultado somente neste painel).',
-      'Produtos encontrados: ' + (d.products_discovered || 0),
-      '',
-      'PRODUTOS ENCONTRADOS (até 10):',
-      products.length ? products.map((x,i) => {
-        const details = [
-          (i+1) + '. ' + (x.title || 'Produto Natura'),
-          'Preço: ' + (x.price || 'não identificado'),
-          'Preço anterior: ' + (x.old_price || 'não identificado'),
-          'Desconto: ' + (x.discount || 'não identificado'),
-          'Disponibilidade: ' + (x.availability || 'não identificada'),
-          'Imagem: ' + (x.image || 'não identificada'),
-          'Detalhes verificados: ' + (x.details_verified ? 'sim' : 'não'),
-          'Link: ' + x.permalink
-        ];
-        return details.join('\\n');
-      }).join('\\n\\n') : 'Nenhum produto encontrado.'
-    ];
-    lines.push('', 'Erros: ' + (d.errors || []).length, 'Envio ao Telegram: desativado', 'Coleta automática: desligada');
-    el('naturaResult').textContent = lines.join('\\n');
+  await postAction('/admin/natura/public-test', 'runNatura', 'naturaResult', 'Extraindo 20 links…', d => {
+    const links = (d.products || []).map(x => x.permalink).filter(Boolean);
+    el('naturaResult').textContent = links.length
+      ? links.join('\\n')
+      : 'Nenhum link de produto encontrado.';
   });
 });
 el('runShopee').addEventListener('click', async () => {
