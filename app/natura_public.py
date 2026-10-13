@@ -713,7 +713,8 @@ async def collect_natura_public_once(max_products=10, inspect_details=True):
 
     return {
         "source": "natura_public_browser",
-        "store_url": STORE_URL,\n        "catalog_urls": [url for url, _ in CATALOG_URLS],
+        "store_url": STORE_URL,
+        "catalog_urls": [url for url, _ in CATALOG_URLS],
         "products_discovered": len(products),
         "products": products,
         "errors": errors,
