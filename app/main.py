@@ -166,6 +166,14 @@ async def lifespan(app: FastAPI):
             runtime["bot"] = await start_bot()
         except Exception:
             logger.exception("Não foi possível iniciar o bot Telegram")
+    if config.supabase_ready():
+        try:
+            pause_rows = get_db().table("extrator_settings").select("value").eq("key", "natura_collector_paused").limit(1).execute().data or []
+            if pause_rows:
+                pause_value = pause_rows[0].get("value") or {}
+                runtime["natura_collector_paused"] = bool(pause_value.get("paused", False)) if isinstance(pause_value, dict) else False
+        except Exception:
+            logger.exception("Não foi possível recuperar o estado de pausa da extração Natura")
     if runtime["bot"]:
         runtime["webhook_task"] = asyncio.create_task(webhook_loop())
     runtime["collector_task"] = asyncio.create_task(collector_loop())
@@ -452,6 +460,8 @@ async def pause_natura_collector(x_admin_secret: str | None = Header(default=Non
     if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
         raise HTTPException(403, "Não autorizado.")
     runtime["natura_collector_paused"] = True
+    if config.supabase_ready():
+        get_db().table("extrator_settings").upsert({"key": "natura_collector_paused", "value": {"paused": True}}).execute()
     return {"status": "paused", "message": "Extração automática Natura/Avon pausada. Uma extração já em andamento poderá terminar."}
 
 
@@ -460,6 +470,8 @@ async def resume_natura_collector(x_admin_secret: str | None = Header(default=No
     if not config.ADMIN_API_SECRET or not secrets.compare_digest(x_admin_secret or "", config.ADMIN_API_SECRET):
         raise HTTPException(403, "Não autorizado.")
     runtime["natura_collector_paused"] = False
+    if config.supabase_ready():
+        get_db().table("extrator_settings").upsert({"key": "natura_collector_paused", "value": {"paused": False}}).execute()
     return {"status": "resumed", "message": "Extração automática Natura/Avon retomada conforme a configuração do serviço."}
 
 
