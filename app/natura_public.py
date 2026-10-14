@@ -684,8 +684,8 @@ async def collect_natura_public_once(max_products=None, inspect_details=True):
                     continue
                 visited_pages.add(page_key)
                 try:
-                    await page.goto(current_url, wait_until="domcontentloaded", timeout=25000)
-                    await page.wait_for_timeout(1800 if current_url in (u for u, _ in CATALOG_URLS) else 1100)
+                    await page.goto(current_url, wait_until="domcontentloaded", timeout=16000)
+                    await page.wait_for_timeout(500 if current_url in (u for u, _ in CATALOG_URLS) else 250)
                     await collect_links_from_current_page(current_marca)
                 except PlaywrightTimeoutError:
                     errors.append("Tempo esgotado ao abrir página para descobrir links: " + current_url)
