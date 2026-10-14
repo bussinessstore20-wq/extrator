@@ -796,6 +796,20 @@ async def collect_natura_public_once(max_products=None, inspect_details=True):
             await context.close()
             await browser.close()
 
+    # Se o navegador abriu a loja mas não encontrou links no DOM (catálogo SPA,
+    # bloqueio ou links dentro de payloads), tenta também o parser HTTP.
+    if not products:
+        try:
+            fallback = await _collect_natura_public_http_once(max_products=max_products)
+            fallback_products = fallback.get("products") or []
+            if fallback_products:
+                fallback["source"] = "natura_public_browser+http_fallback"
+                fallback["errors"] = errors + (fallback.get("errors") or [])
+                return fallback
+            errors.extend(fallback.get("errors") or [])
+            errors.append("Nenhum link de produto foi localizado no DOM nem no HTML HTTP.")
+        except Exception as exc:
+            errors.append(f"Fallback HTTP Natura/Avon: {type(exc).__name__}: {str(exc)[:180]}")
     return {
         "source": "natura_public_browser",
         "store_url": STORE_URL,
