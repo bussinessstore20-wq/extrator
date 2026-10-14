@@ -40,16 +40,16 @@ _BROWSER_LAUNCH_LOCK = asyncio.Lock()
 
 async def _launch_chromium(pw):
     async with _BROWSER_LAUNCH_LOCK:
-        for attempt in range(4):
+        for attempt in range(8):
             try:
                 return await pw.chromium.launch(
                     headless=True,
                     args=["--no-sandbox", "--disable-dev-shm-usage"],
                 )
             except Exception as exc:
-                if "ETXTBSY" not in str(exc) or attempt == 3:
+                if "ETXTBSY" not in str(exc) or attempt == 7:
                     raise
-                await asyncio.sleep(1.0 * (attempt + 1))
+                await asyncio.sleep(min(2.0 * (attempt + 1), 10.0))
 
 
 async def _ensure_chromium():
