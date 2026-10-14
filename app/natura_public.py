@@ -33,41 +33,63 @@ def _with_consultoria(url, marca=None):
             query.append(("marca", existing_brand))
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
-# Evita duas requisições do painel tentando iniciar o mesmo executável Chromium
-# simultaneamente. ETXTBSY é transitório em alguns ambientes Linux/containers.
+# Evita que o teste manual e a coleta automática iniciem/instalem Chromium
+# ao mesmo tempo no mesmo container Render.
 _BROWSER_LAUNCH_LOCK = asyncio.Lock()
+_BROWSER_INSTALL_LOCK = asyncio.Lock()
 
 
 async def _launch_chromium(pw):
     async with _BROWSER_LAUNCH_LOCK:
-        for attempt in range(8):
+        last_error = None
+        for attempt in range(3):
             try:
                 return await pw.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    timeout=30000,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-background-networking",
+                        "--disable-extensions",
+                    ],
                 )
             except Exception as exc:
-                if "ETXTBSY" not in str(exc) or attempt == 7:
+                last_error = exc
+                transient = "ETXTBSY" in str(exc) or isinstance(exc, PlaywrightTimeoutError)
+                if not transient or attempt == 2:
                     raise
-                await asyncio.sleep(min(2.0 * (attempt + 1), 10.0))
+                logger_msg = f"Chromium não iniciou (tentativa {attempt + 1}/3): {type(exc).__name__}"
+                import logging
+                logging.getLogger(__name__).warning(logger_msg)
+                await asyncio.sleep(2 * (attempt + 1))
+        raise last_error
 
 
 async def _ensure_chromium():
-    executable = Path.home() / ".cache" / "ms-playwright"
-    if any(executable.glob("chromium_headless_shell-*/chrome-linux/headless_shell")):
-        return
-    process = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "playwright", "install", "chromium",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-    )
-    try:
-        await asyncio.wait_for(process.communicate(), timeout=180)
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.communicate()
-        raise RuntimeError("Tempo esgotado ao instalar o Chromium do Playwright.")
-    if process.returncode != 0:
-        raise RuntimeError("Não foi possível instalar o Chromium do Playwright.")
+    async with _BROWSER_INSTALL_LOCK:
+        cache = Path.home() / ".cache" / "ms-playwright"
+        executable = cache / "chromium_headless_shell-1169" / "chrome-linux" / "headless_shell"
+        if executable.is_file():
+            return
+        # Procura a versão instalada para não depender de um número de revisão fixo.
+        if any(cache.glob("chromium_headless_shell-*/chrome-linux/headless_shell")):
+            return
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "playwright", "install", "chromium",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), timeout=240)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.communicate()
+            raise RuntimeError("Tempo esgotado ao instalar o Chromium do Playwright. Verifique a etapa de build do Render.")
+        if process.returncode != 0:
+            tail = (output or b"").decode("utf-8", "replace")[-800:]
+            raise RuntimeError("Não foi possível instalar o Chromium do Playwright: " + tail)
+        if not any(cache.glob("chromium_headless_shell-*/chrome-linux/headless_shell")):
+            raise RuntimeError("Instalação terminou, mas o executável headless_shell não foi encontrado no cache do Playwright.")
 
 
 def _clean(value):
