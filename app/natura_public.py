@@ -723,23 +723,19 @@ async def collect_natura_public_once(max_products=None, inspect_details=True):
                     html_source = await page.content()
                     html_source = (
                         html_source
-                        .replace("\\\\/", "/")
-                        .replace("\\\\u002F", "/")
-                        .replace("\\\\u002f", "/")
-                        .replace("\\\\u0026", "&")
+                        .replace("\\/", "/")
+                        .replace("\\u002F", "/")
+                        .replace("\\u002f", "/")
+                        .replace("\\u0026", "&")
                         .replace("&amp;", "&")
                     )
+                    # URLs de produto podem estar no HTML serializado, mesmo sem <a> no DOM.
                     path_matches = re.findall(
-                        r"(/p/[^\\\"'\\\\\\s<>?#]+/(?:NATBRA|AVNBRA)-[0-9]+)",
+                        r"(/p/[^\"'\s<>?#]+/(?:NATBRA|AVNBRA)-[0-9]+)",
                         html_source,
                         re.I,
                     )
-                    absolute_matches = re.findall(
-                        r"https?://(?:www\\.)?minhaloja\\.natura\\.com(/p/[^\\\"'\\\\\\s<>?#]+/(?:NATBRA|AVNBRA)-[0-9]+)",
-                        html_source,
-                        re.I,
-                    )
-                    for path in list(path_matches) + list(absolute_matches):
+                    for path in path_matches:
                         clean_path = path.split("?", 1)[0].rstrip("/")
                         if clean_path:
                             anchors.append({
