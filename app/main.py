@@ -75,7 +75,7 @@ async def natura_collector_loop():
                     str(product.get("permalink") or "").strip()
                     for product in products
                     if str(product.get("permalink") or "").strip()
-                ))[:20]
+                ))
                 sent_rows = get_db().table("extrator_settings").select("value").eq("key", "natura_auto_sent_links").limit(1).execute().data or []
                 sent_links = (sent_rows[0].get("value") or {}).get("links", []) if sent_rows else []
                 sent_set = set(str(link) for link in sent_links)
@@ -178,7 +178,8 @@ async def lifespan(app: FastAPI):
         runtime["webhook_task"] = asyncio.create_task(webhook_loop())
     runtime["collector_task"] = asyncio.create_task(collector_loop())
     runtime["shopee_task"] = asyncio.create_task(shopee_collector_loop())
-    # Natura/Avon: extração somente manual pelo painel; não iniciar rotina agendada.
+    # Natura/Avon: rotina automática separada, controlada por variável e botão de pausa.
+    runtime["natura_task"] = asyncio.create_task(natura_collector_loop())
     runtime["review_task"] = asyncio.create_task(review_loop())
     yield
     for key in ("collector_task", "shopee_task", "natura_task", "review_task", "webhook_task"):
@@ -613,10 +614,10 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div id="mlResult" class="result" role="status">Aguardando execução manual.</div>
   </section>
   <section class="card">
-    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Extração manual sem limite fixo de quantidade de links por execução, com envio ao canal.</p></div><span id="naturaPill" class="pill warn"><i class="dot"></i>Somente manual</span></div>
+    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Coleta automática de Natura e Avon, com envio dos links novos ao canal.</p></div><span id="naturaPill" class="pill warn"><i class="dot"></i>Somente manual</span></div>
     <div class="operation">
       <div class="op-title"><div class="op-icon">🔗</div><div><h3>1. Extrair links da Natura</h3><small>Sua loja personalizada · descoberta de produtos</small></div></div>
-      <p class="sub">Use “Extrair links agora” quando quiser consultar os catálogos Natura e Avon. Não há limite fixo de links por execução nem agendamento automático; os links são enviados ao canal e cada link fica em sua própria linha.</p>
+      <p class="sub">A coleta automática consulta os catálogos a cada 5 minutos. Você também pode iniciar uma extração manual; links novos são enviados ao canal.</p>
       <button id="runNatura" class="btn primary">🔗 Extrair links agora</button>
       <button id="pauseNaturaButton" class="btn orange">⏸ Pausar extração manual</button>
     </div>
@@ -697,7 +698,7 @@ async function refresh() {
     el('shopee').textContent = s.shopee_app_configured ? 'Configurado' : 'Pendente';
     el('auto').textContent = s.collector_enabled ? 'Ligada' : 'Desligada';
     el('shopeeAuto').textContent = s.shopee_collector_enabled ? 'Ligada' : 'Desligada';
-    el('naturaAuto').textContent = 'Somente manual';
+    el('naturaAuto').textContent = s.natura_collector_enabled ? (s.natura_collector_paused ? 'Pausada' : 'Ligada') : 'Desligada';
     setPill('naturaPill', s.natura_collector_paused ? 'Extração manual pausada' : 'Somente manual', s.natura_collector_paused ? 'warn' : 'good');
     el('pauseNaturaButton').textContent = s.natura_collector_paused ? '▶ Reativar botão de extração' : '⏸ Pausar botão de extração';
     el('pauseNaturaButton').className = 'btn ' + (s.natura_collector_paused ? 'green' : 'orange');
@@ -812,7 +813,7 @@ el('runNaturaProduct').addEventListener('click', async () => {
   }
 });
 el('runNatura').addEventListener('click', async () => {
-  await postAction('/admin/natura/public-test', 'runNatura', 'naturaResult', 'Extraindo 20 links…', d => {
+  await postAction('/admin/natura/public-test', 'runNatura', 'naturaResult', 'Extraindo links…', d => {
     const links = (d.products || []).map(x => x.permalink).filter(Boolean);
     el('naturaResult').textContent = links.length
       ? links.join('\n')
