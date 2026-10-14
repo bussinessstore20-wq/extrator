@@ -711,6 +711,37 @@ async def collect_natura_public_once(max_products=None, inspect_details=True):
                         text: (a.innerText || a.textContent || '').trim()
                     }))"""
                 )
+                # Algumas versões da loja carregam os cards no payload HTML/Next.js,
+                # mas não os expõem como <a> no DOM. Procura URLs de SKU no HTML completo.
+                try:
+                    html_source = await page.content()
+                    html_source = (
+                        html_source
+                        .replace("\\\\/", "/")
+                        .replace("\\\\u002F", "/")
+                        .replace("\\\\u002f", "/")
+                        .replace("\\\\u0026", "&")
+                        .replace("&amp;", "&")
+                    )
+                    path_matches = re.findall(
+                        r"(/p/[^\\\"'\\\\\\s<>?#]+/(?:NATBRA|AVNBRA)-[0-9]+)",
+                        html_source,
+                        re.I,
+                    )
+                    absolute_matches = re.findall(
+                        r"https?://(?:www\\.)?minhaloja\\.natura\\.com(/p/[^\\\"'\\\\\\s<>?#]+/(?:NATBRA|AVNBRA)-[0-9]+)",
+                        html_source,
+                        re.I,
+                    )
+                    for path in list(path_matches) + list(absolute_matches):
+                        clean_path = path.split("?", 1)[0].rstrip("/")
+                        if clean_path:
+                            anchors.append({
+                                "href": "https://www.minhaloja.natura.com" + clean_path,
+                                "text": _slug_title(clean_path),
+                            })
+                except Exception as exc:
+                    errors.append(f"Leitura de payload HTML: {type(exc).__name__}")
                 for item in anchors:
                     raw_href = str(item.get("href") or "").split("#")[0]
                     parsed = urlparse(raw_href)
