@@ -141,34 +141,21 @@ async def send_natura_links_to_channel(app: Application, links: list[str]) -> in
     if not config.telegram_ready() or not config.TELEGRAM_CHANNEL_ID or not links:
         log.warning("Natura links: canal não configurado ou nenhum link extraído.")
         return 0
-    clean_links = list(dict.fromkeys(str(link).strip() for link in links if str(link).strip()))[:20]
-    # Mantém cada URL em sua própria linha e respeita o limite de texto do Telegram.
-    chunks = []
-    current = []
-    current_length = 0
-    for link in clean_links:
-        extra = len(link) + (1 if current else 0)
-        if current and current_length + extra > 3900:
-            chunks.append("\n".join(current))
-            current = []
-            current_length = 0
-        current.append(link)
-        current_length += len(link) + (1 if len(current) > 1 else 0)
-    if current:
-            chunks.append("\n".join(current))
+    clean_links = list(dict.fromkeys(str(link).strip() for link in links if str(link).strip()))
+    # Um produto por mensagem, somente URL, sem pausa artificial entre links.
     sent = 0
-    for chunk in chunks:
+    for link in clean_links:
         try:
             await app.bot.send_message(
                 chat_id=config.TELEGRAM_CHANNEL_ID,
-                text=chunk,
+                text=link,
                 disable_web_page_preview=True,
             )
             sent += 1
         except Exception:
-            log.exception("Natura links: falha ao enviar links ao canal.")
+            log.exception("Natura links: falha ao enviar link ao canal.")
             break
-    log.info("Natura links: %s de %s mensagens enviadas; links=%s", sent, len(chunks), len(clean_links))
+    log.info("Natura links: %s de %s links enviados individualmente", sent, len(clean_links))
     return sent
 
 
