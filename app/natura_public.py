@@ -633,16 +633,22 @@ async def _collect_natura_public_http_once(max_products=None):
             try:
                 response = await client.get(url)
                 response.raise_for_status()
-                source = response.text.replace("\\/","/")
+                import html
+                source = html.unescape(response.text)
+                # Catálogos podem embutir URLs em JSON/Next payloads com barras escapadas.
+                source = (source.replace("\\/", "/")
+                                .replace("\\u002F", "/")
+                                .replace("\\u002f", "/"))
             except Exception as exc:
                 errors.append(type(exc).__name__ + " ao abrir catálogo")
                 continue
-            candidates = re.findall(r'href="([^"]+)"', source, re.I)
-            candidates += re.findall(r'(/p/[^" ]+/(?:NATBRA|AVNBRA)-[0-9]+)', source, re.I)
+            # Aceita aspas simples/duplas e procura SKUs também fora de atributos href.
+            candidates = re.findall(r"""href\s*=\s*["']([^"']+)["']""", source, re.I)
+            candidates += re.findall(r'(/p/[^\s"\'<>\\]+?/(?:NATBRA|AVNBRA)-[0-9]+)', source, re.I)
             for href in candidates:
                 absolute = urljoin(url, href.split("#")[0])
                 parsed = urlparse(absolute)
-                if parsed.scheme != "https" or parsed.netloc.lower() != "www.minhaloja.natura.com":
+                if parsed.scheme != "https" or (parsed.netloc or "").lower() not in {"www.minhaloja.natura.com", "minhaloja.natura.com"}:
                     continue
                 path = parsed.path.rstrip("/")
                 match = re.fullmatch(r"/p/.+/((?:NATBRA|AVNBRA)-[0-9]+)", path, re.I)
