@@ -614,7 +614,7 @@ input:focus{border-color:var(--purple);box-shadow:0 0 0 3px #8b7cff18}
     <div id="mlResult" class="result" role="status">Aguardando execução manual.</div>
   </section>
   <section class="card">
-    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Coleta automática de Natura e Avon, com envio dos links novos ao canal.</p></div><span id="naturaPill" class="pill warn"><i class="dot"></i>Somente manual</span></div>
+    <div class="card-head"><div><h2>Natura e Avon</h2><p class="sub">Coleta automática de Natura e Avon, com envio dos links novos ao canal.</p></div><span id="naturaPill" class="pill good"><i class="dot"></i>Automática a cada 5 min</span></div>
     <div class="operation">
       <div class="op-title"><div class="op-icon">🔗</div><div><h3>1. Extrair links da Natura</h3><small>Sua loja personalizada · descoberta de produtos</small></div></div>
       <p class="sub">A coleta automática consulta os catálogos a cada 5 minutos. Você também pode iniciar uma extração manual; links novos são enviados ao canal.</p>
@@ -699,8 +699,8 @@ async function refresh() {
     el('auto').textContent = s.collector_enabled ? 'Ligada' : 'Desligada';
     el('shopeeAuto').textContent = s.shopee_collector_enabled ? 'Ligada' : 'Desligada';
     el('naturaAuto').textContent = s.natura_collector_enabled ? (s.natura_collector_paused ? 'Pausada' : 'Ligada') : 'Desligada';
-    setPill('naturaPill', s.natura_collector_paused ? 'Extração manual pausada' : 'Somente manual', s.natura_collector_paused ? 'warn' : 'good');
-    el('pauseNaturaButton').textContent = s.natura_collector_paused ? '▶ Reativar botão de extração' : '⏸ Pausar botão de extração';
+    setPill('naturaPill', s.natura_collector_paused ? 'Automação pausada' : (s.natura_collector_enabled ? 'Automática a cada 5 min' : 'Automação desligada'), s.natura_collector_paused ? 'warn' : (s.natura_collector_enabled ? 'good' : 'warn'));
+    el('pauseNaturaButton').textContent = s.natura_collector_paused ? '▶ Retomar coleta automática' : '⏸ Pausar coleta automática';
     el('pauseNaturaButton').className = 'btn ' + (s.natura_collector_paused ? 'green' : 'orange');
     el('pauseState').textContent = s.shopee_collector_paused ? 'Pausada' : (s.shopee_collector_enabled ? 'Ativa' : 'Desligada');
     el('interval').textContent = Math.round((s.shopee_collector_interval_seconds || 600) / 60) + ' min';
