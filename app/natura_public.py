@@ -4,7 +4,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, urljoin
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 STORE_URL = "https://www.minhaloja.natura.com/consultoria/lucasuy"
@@ -615,12 +615,68 @@ async def _inspect_product(page, product):
     return product
 
 
+
+async def _collect_natura_public_http_once(max_products=None):
+    """Fallback de baixo custo para obter links sem iniciar Chromium."""
+    import httpx
+    products, errors, seen, visited = [], [], set(), set()
+    queue = list(CATALOG_URLS)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=12.0, headers={
+        "User-Agent": "Mozilla/5.0 Chrome/124 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+    }) as client:
+        while queue and len(visited) < 30 and (max_products is None or len(products) < max_products):
+            url, brand = queue.pop(0)
+            if (url, brand) in visited:
+                continue
+            visited.add((url, brand))
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                source = response.text.replace("\\/","/")
+            except Exception as exc:
+                errors.append(type(exc).__name__ + " ao abrir catálogo")
+                continue
+            candidates = re.findall(r'href="([^"]+)"', source, re.I)
+            candidates += re.findall(r'(/p/[^" ]+/(?:NATBRA|AVNBRA)-[0-9]+)', source, re.I)
+            for href in candidates:
+                absolute = urljoin(url, href.split("#")[0])
+                parsed = urlparse(absolute)
+                if parsed.scheme != "https" or parsed.netloc.lower() != "www.minhaloja.natura.com":
+                    continue
+                path = parsed.path.rstrip("/")
+                match = re.fullmatch(r"/p/.+/((?:NATBRA|AVNBRA)-[0-9]+)", path, re.I)
+                if match:
+                    sku = match.group(1).upper()
+                    if sku not in seen and (max_products is None or len(products) < max_products):
+                        seen.add(sku)
+                        permalink = _with_consultoria("https://www.minhaloja.natura.com" + path, brand)
+                        products.append({"title": _slug_title(permalink), "permalink": permalink,
+                                         "brand_catalog": brand, "sku": sku})
+                elif path and not path.lower().startswith("/consultoria/") and not any(
+                    x in path.lower() for x in ("/login", "/checkout", "/carrinho", "/account")
+                ) and len(queue) < 150:
+                    candidate = _with_consultoria("https://www.minhaloja.natura.com" + path, brand)
+                    if (candidate, brand) not in visited:
+                        queue.append((candidate, brand))
+    return {"source": "natura_public_http_fallback", "store_url": STORE_URL,
+            "catalog_urls": [u for u, _ in CATALOG_URLS],
+            "products_discovered": len(products), "products": products,
+            "errors": errors, "automatic_collection_enabled": False}
+
 async def collect_natura_public_once(max_products=None, inspect_details=True):
     products, seen, errors = [], set(), []
     await _ensure_chromium()
 
     async with async_playwright() as pw:
-        browser = await _launch_chromium(pw)
+        try:
+            browser = await _launch_chromium(pw)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Chromium falhou; tentando fallback HTTP Natura/Avon")
+            result = await _collect_natura_public_http_once(max_products=max_products)
+            result["errors"] = ["Chromium indisponível: " + type(exc).__name__] + result.get("errors", [])
+            return result
         context = await browser.new_context(
             locale="pt-BR", timezone_id="America/Sao_Paulo",
             viewport={"width": 1365, "height": 900},
