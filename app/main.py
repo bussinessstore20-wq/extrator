@@ -103,7 +103,7 @@ async def natura_collector_loop():
         except Exception as exc:
             runtime["natura_last_error"] = f"{type(exc).__name__}: {exc}"[:500]
             logger.exception("Falha no ciclo automático Natura/Avon")
-            await asyncio.sleep(min(config.NATURA_COLLECTOR_INTERVAL_SECONDS, 300))
+            await asyncio.sleep(60)
 
 
 async def review_loop():
