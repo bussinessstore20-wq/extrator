@@ -666,7 +666,14 @@ async def _collect_natura_public_http_once(max_products=None):
 
 async def collect_natura_public_once(max_products=None, inspect_details=True):
     products, seen, errors = [], set(), []
-    await _ensure_chromium()
+    try:
+        await _ensure_chromium()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).exception("Instalação do Chromium falhou; tentando fallback HTTP Natura/Avon")
+        result = await _collect_natura_public_http_once(max_products=max_products)
+        result["errors"] = ["Chromium indisponível: " + type(exc).__name__] + result.get("errors", [])
+        return result
 
     async with async_playwright() as pw:
         try:
