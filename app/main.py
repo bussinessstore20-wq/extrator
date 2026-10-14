@@ -20,6 +20,20 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("extrator")
 runtime = {"bot": None, "collector_task": None, "shopee_task": None, "natura_task": None, "review_task": None, "webhook_task": None, "last_collection": None, "last_error": None, "shopee_last_collection": None, "shopee_last_error": None, "shopee_collector_paused": False, "natura_collector_paused": False, "natura_last_collection": None, "natura_last_error": None}
 
+def natura_collector_blockers():
+    blockers = []
+    if not config.NATURA_COLLECTOR_ENABLED:
+        blockers.append("NATURA_COLLECTOR_ENABLED está desligado")
+    if runtime["natura_collector_paused"]:
+        blockers.append("coleta pausada no painel")
+    if not config.supabase_ready():
+        blockers.append("Supabase sem configuração completa")
+    if not runtime.get("bot"):
+        blockers.append("bot do Telegram não foi inicializado")
+    if not config.telegram_ready():
+        blockers.append("Telegram/canal não está configurado por completo")
+    return blockers
+
 async def collector_loop():
     while True:
         try:
@@ -66,6 +80,11 @@ async def natura_collector_loop():
     await asyncio.sleep(15)
     while True:
         try:
+            blockers = natura_collector_blockers()
+            if blockers:
+                logger.warning("Coleta Natura/Avon não executada: %s", "; ".join(blockers))
+                await asyncio.sleep(60)
+                continue
             if (config.NATURA_COLLECTOR_ENABLED and not runtime["natura_collector_paused"]
                     and config.supabase_ready() and runtime.get("bot")
                     and config.telegram_ready()):
@@ -252,6 +271,7 @@ async def status():
         "natura_collector_paused": runtime["natura_collector_paused"],
         "natura_last_collection": runtime["natura_last_collection"],
         "natura_last_error": runtime["natura_last_error"],
+        "natura_collector_blockers": natura_collector_blockers(),
         "collector_enabled": bool(config.COLLECTOR_ENABLED),
         "last_collection": runtime["last_collection"], "last_error": runtime["last_error"],
     }
